@@ -135,6 +135,7 @@ class LaborSampler(BlockSampler):
         prob=None,
         importance_sampling=0,
         layer_dependency=False,
+        batch_dependency=1,
         sort_src=False,
         prefetch_node_feats=None,
         prefetch_labels=None,
@@ -152,8 +153,11 @@ class LaborSampler(BlockSampler):
         self.prob = prob
         self.importance_sampling = importance_sampling
         self.layer_dependency = layer_dependency
-        self.set_seed()
         self.sorted_src = sort_src
+        self.cnt = F.zeros_like(choice(1e18, 2))
+        self.cnt[0] = -1
+        self.cnt[1] = batch_dependency
+        self.set_seed()
 
     def set_seed(self, random_seed=None):
         """Updates the underlying seed for the sampler
@@ -182,7 +186,13 @@ class LaborSampler(BlockSampler):
             The random seed to be used for next sampling call.
         """
         if random_seed is None:
-            self.random_seed = choice(1e18, 1)
+            self.cnt[0] += 1
+            if self.cnt[1] > 0 and self.cnt[0] % self.cnt[1] == 0:
+                if not hasattr(self, 'random_seed') or self.cnt[1] <= 1:
+                    self.random_seed = choice(1e18, (2 if self.cnt[1] > 1 else 1))
+                else:
+                    self.random_seed[0] = self.random_seed[1]
+                    self.random_seed[1] = choice(1e18, 1)
         else:
             self.random_seed = F.tensor(random_seed, F.int64)
 
@@ -200,6 +210,7 @@ class LaborSampler(BlockSampler):
                 prob=self.prob,
                 importance_sampling=self.importance_sampling,
                 random_seed=random_seed_i,
+                seed2_contribution=(0 if self.cnt[1] <= 1 else ((self.cnt[0] % self.cnt[1]) / self.cnt[1]).item()),
                 output_device=self.output_device,
                 exclude_edges=exclude_eids,
             )
