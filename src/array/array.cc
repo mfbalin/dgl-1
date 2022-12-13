@@ -542,7 +542,8 @@ CSRMatrix CSRRemove(CSRMatrix csr, IdArray entries) {
 
 std::pair<COOMatrix, FloatArray> CSRLaborSampling(
     CSRMatrix mat, IdArray rows, int64_t num_samples, FloatArray prob,
-    int importance_sampling, IdArray random_seed, IdArray NIDs) {
+    int importance_sampling, IdArray random_seed, float seed2_contribution,
+    IdArray NIDs) {
   std::pair<COOMatrix, FloatArray> ret;
   ATEN_CSR_SWITCH_CUDA_UVA(mat, rows, XPU, IdType, "CSRLaborSampling", {
     const auto dtype = IsNullArray(prob)
@@ -550,7 +551,8 @@ std::pair<COOMatrix, FloatArray> CSRLaborSampling(
                            : prob->dtype;
     ATEN_FLOAT_TYPE_SWITCH(dtype, FloatType, "probability", {
       ret = impl::CSRLaborSampling<XPU, IdType, FloatType>(
-          mat, rows, num_samples, prob, importance_sampling, random_seed, NIDs);
+          mat, rows, num_samples, prob, importance_sampling, random_seed,
+          seed2_contribution, NIDs);
     });
   });
   return ret;
@@ -816,7 +818,8 @@ COOMatrix COORemove(COOMatrix coo, IdArray entries) {
 
 std::pair<COOMatrix, FloatArray> COOLaborSampling(
     COOMatrix mat, IdArray rows, int64_t num_samples, FloatArray prob,
-    int importance_sampling, IdArray random_seed, IdArray NIDs) {
+    int importance_sampling, IdArray random_seed, float seed2_contribution,
+    IdArray NIDs) {
   std::pair<COOMatrix, FloatArray> ret;
   ATEN_COO_SWITCH(mat, XPU, IdType, "COOLaborSampling", {
     const auto dtype = IsNullArray(prob)
@@ -824,7 +827,8 @@ std::pair<COOMatrix, FloatArray> COOLaborSampling(
                            : prob->dtype;
     ATEN_FLOAT_TYPE_SWITCH(dtype, FloatType, "probability", {
       ret = impl::COOLaborSampling<XPU, IdType, FloatType>(
-          mat, rows, num_samples, prob, importance_sampling, random_seed, NIDs);
+          mat, rows, num_samples, prob, importance_sampling, random_seed,
+          seed2_contribution, NIDs);
     });
   });
   return ret;

@@ -174,6 +174,7 @@ std::pair<COOMatrix, FloatArray> CSRLaborSampling(
     FloatArray prob,
     int importance_sampling,
     IdArray random_seed,
+    float seed2_contribution,
     IdArray NIDs);
 
 // FloatType is the type of probability data.
@@ -291,6 +292,7 @@ std::pair<COOMatrix, FloatArray> COOLaborSampling(
     FloatArray prob,
     int importance_sampling,
     IdArray random_seed,
+    float seed2_contribution,
     IdArray NIDs);
 
 // FloatType is the type of probability data.
