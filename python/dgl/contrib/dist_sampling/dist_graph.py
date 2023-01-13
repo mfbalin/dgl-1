@@ -53,6 +53,31 @@ def uniform_partition(g, n_procs, random=True):
     idx = th.randperm(N, device=g.device) if random else th.arange(N, device=g.device)
     return [idx[i * N // n_procs: (i + 1) * N // n_procs] for i in range(n_procs)]
 
+def _split_idx(idx, n, random):
+    N = idx.shape[0]
+    perm = th.randperm(N, device=idx.device) if random else th.arange(N, device=idx.device)
+    return [idx[perm[i * N // n: (i + 1) * N // n]] for i in range(n)]
+
+def uniform_partition_balanced(g, n_procs, random=True):
+    N = g.num_nodes()
+    train_idx, = th.nonzero(g.ndata['train_mask'], as_tuple=True)
+    train_part = _split_idx(train_idx, n_procs, random)
+
+    val_idx, = th.nonzero(g.ndata['val_mask'], as_tuple=True)
+    val_part = _split_idx(val_idx, n_procs, random)
+
+    test_idx, = th.nonzero(g.ndata['test_mask'], as_tuple=True)
+    test_part = _split_idx(test_idx, n_procs, random)
+
+    other_idx, = th.nonzero(~(g.ndata['train_mask'] | g.ndata['val_mask'] | g.ndata['test_mask']), as_tuple=True)
+    other_part = _split_idx(other_idx, n_procs, random)
+
+    out = [[] for i in range(n_procs)]
+    for parts in [train_part, val_part, test_part, other_part]:
+        for j, part in enumerate(parts):
+            out[j].append(part)
+    return [th.cat(parts, dim=0) for parts in out]
+
 def metis_partition(g, n_procs):
     parts = metis_partition_assignment(g, n_procs)
     idx = th.argsort(parts)

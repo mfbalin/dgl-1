@@ -27,7 +27,7 @@ import torchmetrics.functional as MF
 from torch.utils.tensorboard import SummaryWriter
 import dgl
 import dgl.nn as dglnn
-from dgl.contrib.dist_sampling import DistConv, DistConvFunction, DistGraph, DistSampler, metis_partition, uniform_partition, reorder_graph_wrapper
+from dgl.contrib.dist_sampling import DistConv, DistConvFunction, DistGraph, DistSampler, metis_partition, uniform_partition, uniform_partition_balanced, reorder_graph_wrapper
 from dgl.transforms.functional import remove_self_loop
 import argparse
 import sys
@@ -390,8 +390,11 @@ def main(args):
         elif args.partition == 'random':
             th.manual_seed(0)
             parts = uniform_partition(g, world_size)
+        elif args.partition == 'random-balanced':
+            th.manual_seed(0)
+            parts = uniform_partition_balanced(g, world_size)
         else:
-            parts = [th.arange(i * g.num_nodes() // world_size, (i + 1) * g.num_nodes() // world_size) for i in range(world_size)]
+            parts = uniform_partition(g, world_size, False)
         g = reorder_graph_wrapper(g, parts)
 
         dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}'.format(args.dataset, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
@@ -416,7 +419,7 @@ if __name__ == '__main__':
     argparser.add_argument('--batch-dependency', type=int, default=1)
     argparser.add_argument('--dropout', type=float, default=0.5)
     argparser.add_argument('--edge-pred', action='store_true')
-    argparser.add_argument('--partition', type=str, default='random')
+    argparser.add_argument('--partition', type=str, default='random-balanced')
     argparser.add_argument('--undirected', action='store_true')
     argparser.add_argument('--train', action='store_true')
     argparser.add_argument('--replication', type=int, default=0)
