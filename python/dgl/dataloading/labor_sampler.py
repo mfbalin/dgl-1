@@ -157,6 +157,7 @@ class LaborSampler(BlockSampler):
         self.cnt = F.zeros_like(choice(1e18, 2))
         self.cnt[0] = -1
         self.cnt[1] = batch_dependency
+        self.inc = 12345
         self.set_seed(None if batch_dependency > 0 else choice(1e18, 1))
 
     def set_seed(self, random_seed=None):
@@ -192,9 +193,9 @@ class LaborSampler(BlockSampler):
                     self.random_seed = choice(1e18, (2 if self.cnt[1] > 1 else 1))
                 else:
                     self.random_seed[0] = self.random_seed[1]
-                    self.random_seed[1] = choice(1e18, 1)
+                    self.random_seed[1] += self.inc
         else:
-            self.random_seed = F.tensor(random_seed, F.int64)
+            self.random_seed = F.tensor(random_seed, F.int64) if self.cnt[1] <= 1 else F.tensor([random_seed, random_seed + self.inc], F.int64)
 
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         output_nodes = seed_nodes

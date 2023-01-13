@@ -24,6 +24,7 @@ import torch.nn.functional as F
 import torch.distributed as thd
 import torch.distributed.optim
 import torchmetrics.functional as MF
+from torch.utils.tensorboard import SummaryWriter
 import dgl
 import dgl.nn as dglnn
 from dgl.contrib.dist_sampling import DistConv, DistConvFunction, DistGraph, DistSampler, metis_partition, uniform_partition, reorder_graph_wrapper
@@ -31,6 +32,8 @@ from dgl.transforms.functional import remove_self_loop
 import argparse
 import sys
 import os
+import glob
+from contextlib import nullcontext
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m
 
@@ -158,41 +161,44 @@ def cross_entropy(block_outputs, cached_variables, pos_graph, neg_graph):
     acc = th.sum((score >= 0.5) == (label >= 0.5)) / score.shape[0]
     return loss, acc
 
-def producer(args, g, train_idx, reverse_eids, device):
+def producer(args, g, idxs, reverse_eids, device):
     fanouts = [int(_) for _ in args.fan_out.split(',')]
 
     if args.sampler == 'labor':
-        sampler = DistSampler(g, dgl.dataloading.LaborSampler, fanouts, ['features'], [], [] if args.edge_pred else ['labels'], importance_sampling=args.importance_sampling)
+        sampler = DistSampler(g, dgl.dataloading.LaborSampler, fanouts, ['features'], [], [] if args.edge_pred else ['labels'], importance_sampling=args.importance_sampling, layer_dependency=args.layer_dependency, batch_dependency=args.batch_dependency)
     else:
         sampler = DistSampler(g, dgl.dataloading.NeighborSampler, fanouts, ['features'], [], [] if args.edge_pred else ['labels'])
+    unbiased_sampler = DistSampler(g, dgl.dataloading.NeighborSampler, fanouts if True else [-1] * len(fanouts), ['features'], [], [] if args.edge_pred else ['labels'])
     if args.edge_pred:
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids,
                     negative_sampler=dgl.dataloading.negative_sampler.Uniform(1))
     it = 0
     outputs = [None, None]
+    num_itemss = [idx.shape[0] if not args.edge_pred else g.g.num_edges() for idx in idxs]
+    total_itemss = th.tensor(num_itemss, device=device)
+    thd.all_reduce(total_itemss, thd.ReduceOp.SUM, g.comm)
+    num_iterss = total_itemss // (g.world_size * args.batch_size)
     for epoch in range(args.num_epochs):
         with nvtx.annotate("epoch: {}".format(epoch), color="orange"):
-            num_items = train_idx.shape[0] if not args.edge_pred else g.g.num_edges()
-            if args.batch_size < num_items:
-                perm = th.randperm(num_items, device=device)
-            elif epoch == 0:
-                perm = th.arange(num_items, device=device)
-            for i in range(0, num_items, args.batch_size):
-                with nvtx.annotate("iteration: {}".format(it), color="yellow"):
-                    seeds = train_idx[perm[i: i + args.batch_size]] if not args.edge_pred else perm[i: i + args.batch_size]
-                    out = sampler.sample(g.g, seeds.to(device))
-                    wait = out[-1][0].slice_features(out[-1][0])
-                    out[-1][-1].slice_labels(out[-1][-1])
-                    outputs[it % 2] = out + (wait,)
-                    it += 1
-                    if it > 1:
-                        out = outputs[it % 2]
-                        out[-1]()
-                        yield epoch, out[:-1]
+            for dataloader_idx, (idx, num_items, num_iters) in enumerate(zip(idxs, num_itemss, num_iterss)):
+                perm = th.randperm(num_items, device=device) if args.batch_size < num_items else th.arange(num_items, device=device)
+                for j in range(num_iters):
+                    i = slice(j * num_items // num_iters, (j + 1) * num_items // num_iters)
+                    with nvtx.annotate("iteration: {}".format(it), color="yellow"):
+                        seeds = idx[perm[i]] if not args.edge_pred else perm[i]
+                        out = sampler.sample(g.g, seeds.to(device)) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds.to(device))
+                        wait = out[-1][0].slice_features(out[-1][0])
+                        out[-1][-1].slice_labels(out[-1][-1])
+                        outputs[it % 2] = (dataloader_idx, it, epoch, out) + (wait,)
+                        it += 1
+                        if it > 1:
+                            out = outputs[it % 2]
+                            out[-1]()
+                            yield out[:-1]
     it += 1
     out = outputs[it % 2]
     out[-1]()
-    yield args.num_epochs, out[:-1]
+    yield out[:-1]
 
 def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes, args):
     th.set_num_threads(os.cpu_count() // local_size)
@@ -202,7 +208,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     global_rank = group_rank * local_size + local_rank
     thd.init_process_group('nccl', 'env://', world_size=world_size, rank=global_rank)
 
-    g = DistGraph(g, parts, args.replication, args.uva_ndata.split(','))
+    g = DistGraph(g, parts, args.replication, args.uva_ndata.split(','), cache_size=args.cache_size)
 
     train_idx = th.nonzero(g.dstdata['train_mask'], as_tuple=True)[0] + g.l_offset
     val_idx = th.nonzero(g.dstdata['val_mask'], as_tuple=True)[0] + g.l_offset
@@ -241,7 +247,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
                     samplers = [dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids,
                     negative_sampler=dgl.dataloading.negative_sampler.Uniform(1)) for sampler in samplers]
                 sampler_names = ['NS', 'LABOR-{}'.format(args.importance_sampling)]
-                for batch_size in [1000, 2000, 4000, 8000, 16000, 32000, 64000]:
+                for batch_size in [2 ** i for i in range(10, 17)]:
                     num_items = train_idx.shape[0] if not args.edge_pred else g.g.num_edges()
                     perm = th.randperm(num_items, device=device)
                     for i in range(0, num_items, batch_size):
@@ -254,40 +260,77 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
                                 input_nodes, pair_graph, neg_graph, blocks = sampler.sample(g.g, seeds)
                                 print("{}-{}-{}-{}".format(name, batch_size, k, global_rank), [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks])
 
+    logdir = os.path.join(args.logdir, '{}_{}_{}_{}_{}'.format(args.dataset, args.sampler, args.importance_sampling, args.layer_dependency, args.batch_dependency))
+    dirs = glob.glob('./{}/*'.format(logdir))
+    version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
+    logdir = './{}/version_{}_{}'.format(logdir, global_rank, version)
+    
+    writer = SummaryWriter(logdir)
+    
     st, end = th.cuda.Event(enable_timing=True), th.cuda.Event(enable_timing=True)
     st.record()
-    it = 0
     last_epoch = 0
-    for epoch, out in producer(args, g, train_idx, reverse_eids, device):
+    val_accs = [0, 0]
+    val_losses = [0, 0]
+    cnts = [0, 0]
+    for out in producer(args, g, ([train_idx, val_idx, val_idx] if not args.edge_pred else [None]), reverse_eids, device):
+        dataloader_idx, it, epoch = out[:3]
+        out = out[3]
         input_nodes = out[0]
         blocks = out[-1]
         block_stats = [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks]
+        writer.add_scalar('dataloader_idx', dataloader_idx, it)
+        for i, mfg in enumerate(blocks):
+            writer.add_scalar('num_src_nodes/{}'.format(i), mfg.num_src_nodes(), it)
+            writer.add_scalar('num_edges/{}'.format(i), mfg.num_edges(), it)
+            writer.add_scalar('num_nodes/{}'.format(i), mfg.cached_variables[3].shape[0], it)
+        writer.add_scalar('num_nodes/{}'.format(len(blocks)), blocks[-1].num_dst_nodes(), it)
         x = blocks[0].srcdata.pop('features')
         if not args.edge_pred:
             y = blocks[-1].dstdata.pop('labels')
-        with nvtx.annotate("forward", color="purple"):
+        model.train(dataloader_idx == 0)
+        is_grad_enabled = nullcontext() if model.training else torch.no_grad()
+        with nvtx.annotate("forward", color="purple"), is_grad_enabled:
             y_hat = model(blocks, x)
             if args.edge_pred:
                 loss, acc = cross_entropy(y_hat, blocks[-1].cached_variables2, out[1], out[2])
             else:
                 loss = F.cross_entropy(y_hat, y)
-        with nvtx.annotate("backward", color="purple"):
-            opt.zero_grad()
-            loss.backward()
-        with nvtx.annotate("optimizer", color="purple"):
-            opt.step()
+        if model.training:
+            with nvtx.annotate("backward", color="purple"):
+                opt.zero_grad()
+                loss.backward()
+            with nvtx.annotate("optimizer", color="purple"):
+                opt.step()
         if not args.edge_pred:
             with nvtx.annotate("accuracy", color="purple"):
                 acc = MF.accuracy(y_hat, y)
         end.record()
+        if dataloader_idx >= 1:
+            val_accs[dataloader_idx - 1] += acc.item() * y_hat.shape[0]
+            val_losses[dataloader_idx - 1] += loss.item() * y_hat.shape[0]
+            cnts[dataloader_idx - 1] += y_hat.shape[0]
+        mem = th.cuda.max_memory_allocated() >> 20
+        end.synchronize()
         if epoch != last_epoch:
             sched.step()
             last_epoch = epoch
-        mem = th.cuda.max_memory_allocated() >> 20
-        end.synchronize()
-        print('rank: {}, it: {}, Loss: {:.4f}, Acc: {:.4f}, GPU Mem: {:.0f} MB, time: {:.3f}ms, stats: {}'.format(global_rank, it, loss.item(), acc.item(), mem, st.elapsed_time(end), block_stats))
+            if not args.edge_pred:
+                for k in range(2):
+                    writer.add_scalar('val_acc/dataloader_idx_{}'.format(k), val_accs[k] / cnts[k], it)
+                    writer.add_scalar('val_loss/dataloader_idx_{}'.format(k), val_losses[k] / cnts[k], it)
+                    val_losses[k] = val_accs[k] = cnts[k] = 0
+        iter_time = st.elapsed_time(end)
+        writer.add_scalar('iter_time', iter_time, it)
+        writer.add_scalar('epoch', epoch, it)
+        writer.add_scalar('cache_miss', x.cache_miss, it)
+        if model.training:
+            writer.add_scalar('train_loss_step', loss.item(), it)
+            writer.add_scalar('train_acc_step', acc.item(), it)
+        print('rank: {}, it: {}, dataloader_idx: {}, Loss: {:.4f}, Acc: {:.4f}, GPU Mem: {:.0f} MB, time: {:.3f}ms, stats: {}'.format(global_rank, it, dataloader_idx, loss.item(), acc.item(), mem, iter_time, block_stats))
         st, end = end, st
-        it += 1
+    
+    writer.close()
 
     thd.barrier()
 
@@ -369,6 +412,8 @@ if __name__ == '__main__':
     argparser.add_argument('--lr', type=float, default=0.001)
     argparser.add_argument('--sampler', type=str, default='labor')
     argparser.add_argument('--importance-sampling', type=int, default=0)
+    argparser.add_argument('--layer-dependency', action='store_true')
+    argparser.add_argument('--batch-dependency', type=int, default=1)
     argparser.add_argument('--dropout', type=float, default=0.5)
     argparser.add_argument('--edge-pred', action='store_true')
     argparser.add_argument('--partition', type=str, default='random')
@@ -377,5 +422,7 @@ if __name__ == '__main__':
     argparser.add_argument('--replication', type=int, default=0)
     argparser.add_argument('--root-dir', type=str, default='/localscratch/ogb')
     argparser.add_argument('--uva-ndata', type=str, default='')
+    argparser.add_argument('--cache-size', type=int, default=0)
+    argparser.add_argument('--logdir', type=str, default='tb_logs')
     args = argparser.parse_args()
     main(args)

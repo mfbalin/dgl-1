@@ -36,16 +36,16 @@ def load_mag240m(root="dataset"):
     g.ndata["features"] = feats
     train_nid = th.LongTensor(dataset.get_idx_split("train")) + paper_offset
     val_nid = th.LongTensor(dataset.get_idx_split("valid")) + paper_offset
-    # test_nid = th.LongTensor(dataset.get_idx_split("test")) + paper_offset
+    test_nid = th.LongTensor(dataset.get_idx_split("test-dev")) + paper_offset
     train_mask = th.zeros((g.number_of_nodes(),), dtype=th.bool)
     train_mask[train_nid] = True
     val_mask = th.zeros((g.number_of_nodes(),), dtype=th.bool)
     val_mask[val_nid] = True
-    # test_mask = th.zeros((g.number_of_nodes(),), dtype=th.bool)
-    # test_mask[test_nid] = True
+    test_mask = th.zeros((g.number_of_nodes(),), dtype=th.bool)
+    test_mask[test_nid] = True
     g.ndata["train_mask"] = train_mask
     g.ndata["val_mask"] = val_mask
-    # g.ndata["test_mask"] = test_mask
+    g.ndata["test_mask"] = test_mask
     labels = th.tensor(dataset.paper_label)
     num_labels = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
     g.ndata["labels"] = - th.ones(g.number_of_nodes(), dtype=th.int64)

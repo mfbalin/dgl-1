@@ -42,6 +42,8 @@ from ... import ndarray as nd
 from ...dataloading.base import Sampler
 from ...heterograph import DGLGraph
 
+from ..gpu_cache import GPUCache
+
 def reorder_graph_wrapper(g, parts):
     return g.reorder_graph(node_permute_algo='custom', # edge_permute_algo='dst', 
     store_ids=False, permute_config={'nodes_perm': th.cat(parts)})
@@ -96,6 +98,11 @@ class DistSampler(Sampler):
         self.prefetch_edge_feats = prefetch_edge_feats
         self.prefetch_labels = prefetch_labels
         self.output_device = self.g.device
+
+        for i, sampler in enumerate(reversed(self.samplers)):
+            random_seed = self.g.get_random_seed(len(self.samplers))
+            if hasattr(sampler, 'set_seed'):
+                sampler.set_seed(random_seed + (0 if sampler.layer_dependency else i))
     
     def sample(self, g, seed_nodes, exclude_eids=None):
         # ignore g as we already store DistGraph
@@ -115,7 +122,7 @@ class DistGraph(object):
     We assume that torch.cuda.device() is called to set the GPU for the all processes
     We will rely on torch.cuda.current_device() to get the device.
     '''
-    def __init__(self, g, g_parts, replication=0, uva_ndata=[], uva_edata=[], compress=False):
+    def __init__(self, g, g_parts, replication=0, uva_ndata=[], uva_edata=[], cache_size=0, compress=False):
 
         assert(thd.is_available()
             and thd.is_initialized()
@@ -261,6 +268,7 @@ class DistGraph(object):
         thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
         self.last_comm = self.comm
         self.works = []
+        self.caches = {} if cache_size <= 0 else {key: GPUCache(cache_size, self.dstdata[key].shape[1], g.idtype) for key in uva_ndata}
 
     def sorted_global_partition(self, ids, g_comm):
         return th.searchsorted(ids, self.g_node_ranges if g_comm else self.node_ranges)
@@ -374,7 +382,6 @@ class DistGraph(object):
     @nvtx.annotate("sample_blocks", color="purple")
     def sample_blocks(self, seed_nodes, samplers, exclude_eids=None, prefetch_node_feats=[], prefetch_edge_feats=[], prefetch_labels=[]):
         blocks = []
-        random_seed = self.get_random_seed(len(samplers))
         if not (th.all(self.pr[self.rank] <= seed_nodes) and th.all(seed_nodes < self.pr[self.rank + 1])):
             seed_nodes, seed_nodes_inv = th.sort(seed_nodes)
             requested_nodes, requested_sizes, request_counts = self.exchange_node_ids(seed_nodes, False)
@@ -386,8 +393,7 @@ class DistGraph(object):
         output_nodes = seed_nodes
         for i, sampler in enumerate(reversed(samplers)):
             assert th.all(self.pr[self.rank] <= seed_nodes) and th.all(seed_nodes < self.pr[self.rank + 1])
-            if hasattr(sampler, 'set_seed'):
-                sampler.set_seed(random_seed + (0 if sampler.layer_dependency else i))
+
             seed_nodes, _, blocks_i = sampler.sample_blocks(self.g, seed_nodes, exclude_eids=exclude_eids)
             
             requested_nodes, requested_sizes, request_counts = self.exchange_node_ids(seed_nodes, i == len(samplers) - 1)
@@ -399,12 +405,23 @@ class DistGraph(object):
         
         def feature_slicer(block):
             srcdataevents = {}
+            cache_miss = 1
             for k in prefetch_node_feats:
-                tensor = self.dstdata[k][requested_nodes - self.l_offset].to(self.device, th.float) #
+                input_nodes = requested_nodes - self.l_offset
+                if k in self.caches:
+                    cache = self.caches[k]
+                    tensor, missing_index, missing_keys = cache.query(input_nodes)
+                    missing_values = self.dstdata[k][missing_keys.long()]
+                    cache.replace(missing_keys, missing_values.to(th.float))
+                    cache_miss = missing_keys.shape[0] / input_nodes.shape[0]
+                    tensor[missing_index] = missing_values.to(tensor.dtype)
+                else:
+                    tensor = self.dstdata[k][input_nodes.long()].to(self.device, th.float) #
                 out = th.empty((sum(request_counts),) + tensor.shape[1:], dtype=tensor.dtype, device=tensor.device)
                 par_out = list(th.split(out, request_counts))
                 par_out = [par_out[i] for i in self.permute.tolist()]
                 work = self.all_to_all(par_out, list(th.split(tensor, requested_sizes)), True)
+                out.cache_miss = cache_miss
                 block.srcdata[k] = out # .to(th.float)
                 srcdataevents[k] = work
             
