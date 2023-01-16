@@ -268,6 +268,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     writer = SummaryWriter(logdir)
     
     st, end = th.cuda.Event(enable_timing=True), th.cuda.Event(enable_timing=True)
+    fw_st = th.cuda.Event(enable_timing=True)
     st.record()
     last_epoch = 0
     val_accs = [0, 0]
@@ -290,6 +291,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             y = blocks[-1].dstdata.pop('labels')
         model.train(dataloader_idx == 0)
         is_grad_enabled = nullcontext() if model.training else torch.no_grad()
+        fw_st.record()
         with nvtx.annotate("forward", color="purple"), is_grad_enabled:
             y_hat = model(blocks, x)
             if args.edge_pred:
@@ -322,6 +324,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
                     val_losses[k] = val_accs[k] = cnts[k] = 0
         iter_time = st.elapsed_time(end)
         writer.add_scalar('iter_time', iter_time, it)
+        writer.add_scalar('forward_backward_time', fw_st.elapsed_time(end), it)
         writer.add_scalar('epoch', epoch, it)
         writer.add_scalar('cache_miss', x.cache_miss, it)
         if model.training:
