@@ -274,7 +274,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     val_accs = [0, 0]
     val_losses = [0, 0]
     cnts = [0, 0]
-    for out in producer(args, g, ([train_idx, val_idx, val_idx] if not args.edge_pred else [None]), reverse_eids, device):
+    for out in producer(args, g, ([train_idx, val_idx] if not args.edge_pred else [None]), reverse_eids, device):
         dataloader_idx, it, epoch = out[:3]
         out = out[3]
         input_nodes = out[0]
@@ -318,7 +318,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             sched.step()
             last_epoch = epoch
             if not args.edge_pred:
-                for k in range(2):
+                for k in range(1):
                     writer.add_scalar('val_acc/dataloader_idx_{}'.format(k), val_accs[k] / cnts[k], it)
                     writer.add_scalar('val_loss/dataloader_idx_{}'.format(k), val_losses[k] / cnts[k], it)
                     val_losses[k] = val_accs[k] = cnts[k] = 0
