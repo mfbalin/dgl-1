@@ -1516,7 +1516,7 @@ def test_hgt(idtype, in_size, num_heads):
     sorted_y = m(sorted_g, sorted_x, sorted_ntype, sorted_etype, presorted=False)
     assert sorted_y.shape == (g.num_nodes(), head_size * num_heads)
     # mini-batch
-    train_idx = th.randint(0, 100, (10, ), dtype = idtype)
+    train_idx = th.randperm(100, dtype = idtype)[:10]
     sampler = dgl.dataloading.NeighborSampler([-1])
     train_loader = dgl.dataloading.DataLoader(g, train_idx.to(dev), sampler,
                                             batch_size=8, device=dev,
@@ -1802,6 +1802,30 @@ def test_BiasedMultiheadAttention(feat_size, num_heads, bias, attn_bias_type, at
 
     assert out.shape == (16, 100, feat_size)
 
+@pytest.mark.parametrize('attn_bias_type', ['add', 'mul'])
+@pytest.mark.parametrize('norm_first', [True, False])
+def test_GraphormerLayer(attn_bias_type, norm_first):
+    batch_size = 16
+    num_nodes = 100
+    feat_size = 512
+    num_heads = 8
+    nfeat = th.rand(batch_size, num_nodes, feat_size)
+    attn_bias = th.rand(batch_size, num_nodes, num_nodes, num_heads)
+    attn_mask = th.rand(batch_size, num_nodes, num_nodes) < 0.5
+
+    net = nn.GraphormerLayer(
+        feat_size=feat_size,
+        hidden_size=2048,
+        num_heads=num_heads,
+        attn_bias_type=attn_bias_type,
+        norm_first=norm_first,
+        dropout=0.1,
+        activation=th.nn.ReLU()
+    )
+    out = net(nfeat, attn_bias, attn_mask)
+
+    assert out.shape == (batch_size, num_nodes, feat_size)
+
 @pytest.mark.parametrize('max_len', [1, 4])
 @pytest.mark.parametrize('feat_dim', [16])
 @pytest.mark.parametrize('num_heads', [1, 8])
@@ -1820,4 +1844,32 @@ def test_PathEncoder(max_len, feat_dim, num_heads):
     model = nn.PathEncoder(max_len, feat_dim, num_heads=num_heads).to(dev)
     bias = model(bg, edge_feat)
     assert bias.shape == (2, 6, 6, num_heads)
-    
+
+@pytest.mark.parametrize('max_dist', [1, 4])
+@pytest.mark.parametrize('num_kernels', [8, 16])
+@pytest.mark.parametrize('num_heads', [1, 8])
+def test_SpatialEncoder(max_dist, num_kernels, num_heads):
+    dev = F.ctx()
+    g1 = dgl.graph((
+        th.tensor([0, 0, 0, 1, 1, 2, 3, 3]),
+        th.tensor([1, 2, 3, 0, 3, 0, 0, 1])
+    )).to(dev)
+    g2 = dgl.graph((
+        th.tensor([0, 1, 2, 3, 2, 5]),
+        th.tensor([1, 2, 3, 4, 0, 3])
+    )).to(dev)
+    bg = dgl.batch([g1, g2])
+    ndata = th.rand(bg.num_nodes(), 3).to(dev)
+    num_nodes = bg.num_nodes()
+    node_type = th.randint(0, 512, (num_nodes,)).to(dev)
+    model_1 = nn.SpatialEncoder(max_dist, num_heads=num_heads).to(dev)
+    model_2 = nn.SpatialEncoder3d(num_kernels, num_heads=num_heads).to(dev)
+    model_3 = nn.SpatialEncoder3d(
+        num_kernels, num_heads=num_heads, max_node_type=512
+    ).to(dev)
+    encoding = model_1(bg)
+    encoding3d_1 = model_2(bg, ndata)
+    encoding3d_2 = model_3(bg, ndata, node_type)
+    assert encoding.shape == (2, 6, 6, num_heads)
+    assert encoding3d_1.shape == (2, 6, 6, num_heads)
+    assert encoding3d_2.shape == (2, 6, 6, num_heads)
