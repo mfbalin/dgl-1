@@ -261,9 +261,9 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
                                 print("{}-{}-{}-{}".format(name, batch_size, k, global_rank), [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks])
 
     logdir = os.path.join(args.logdir, '{}_{}_{}_{}_{}'.format(args.dataset, args.sampler, args.importance_sampling, args.layer_dependency, args.batch_dependency))
-    dirs = glob.glob('./{}/*'.format(logdir))
+    dirs = glob.glob('{}/*'.format(logdir))
     version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
-    logdir = './{}/version_{}_{}'.format(logdir, global_rank, version)
+    logdir = '{}/version_{}_{}'.format(logdir, global_rank, version)
     
     writer = SummaryWriter(logdir)
     
