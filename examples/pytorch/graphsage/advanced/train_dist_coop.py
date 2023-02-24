@@ -189,6 +189,8 @@ def producer(args, g, idxs, reverse_eids, device):
                         out = sampler.sample(g.g, seeds.to(device)) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds.to(device))
                         wait = out[-1][0].slice_features(out[-1][0])
                         out[-1][-1].slice_labels(out[-1][-1])
+                        for block in out[-1]:
+                            block.slice_edges(block)
                         outputs[it % 2] = (dataloader_idx, it, epoch, out) + (wait,)
                         it += 1
                         if it > 1:
@@ -208,11 +210,11 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     global_rank = group_rank * local_size + local_rank
     thd.init_process_group('nccl', 'env://', world_size=world_size, rank=global_rank)
 
-    g = DistGraph(g, parts, args.replication, args.uva_ndata.split(','), cache_size=args.cache_size)
+    g = DistGraph(g, parts, args.replication, args.uva_data, args.uva_ndata.split(','), cache_size=args.cache_size)
 
-    train_idx = th.nonzero(g.dstdata['train_mask'], as_tuple=True)[0] + g.l_offset
-    val_idx = th.nonzero(g.dstdata['val_mask'], as_tuple=True)[0] + g.l_offset
-    test_idx = th.nonzero(~(g.dstdata['train_mask'] | g.dstdata['val_mask']), as_tuple=True)[0] + g.l_offset
+    train_idx = (th.nonzero(g.dstdata['train_mask'], as_tuple=True)[0] + g.l_offset).to(device)
+    val_idx = (th.nonzero(g.dstdata['val_mask'], as_tuple=True)[0] + g.l_offset).to(device)
+    test_idx = (th.nonzero(~(g.dstdata['train_mask'] | g.dstdata['val_mask']), as_tuple=True)[0] + g.l_offset).to(device)
     reverse_eids = None if 'is_reverse' not in g.g.edata else th.nonzero(g.g.edata['is_reverse'], as_tuple=True)[0]
     
     num_layers = args.num_layers
@@ -427,6 +429,7 @@ if __name__ == '__main__':
     argparser.add_argument('--train', action='store_true')
     argparser.add_argument('--replication', type=int, default=0)
     argparser.add_argument('--root-dir', type=str, default='/localscratch/ogb')
+    argparser.add_argument('--uva-data', action='store_true')
     argparser.add_argument('--uva-ndata', type=str, default='')
     argparser.add_argument('--cache-size', type=int, default=0)
     argparser.add_argument('--logdir', type=str, default='tb_logs')

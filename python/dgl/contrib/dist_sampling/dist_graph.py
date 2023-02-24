@@ -28,7 +28,7 @@ import torch.distributed as thd
 from ...subgraph import in_subgraph
 from ...base import NID, EID
 
-from ..unified_tensor import UnifiedTensor
+from ...utils import gather_pinned_tensor_rows
 
 from ...convert import graph
 from ...heterograph_index import create_unitgraph_from_coo
@@ -141,13 +141,20 @@ class LocalDGLGraph(DGLGraph):
     def num_nodes(self, vtype=None):
         return (self._num_nodes[vtype] if vtype is not None else sum(c for _, c in self._num_nodes.items())) if len(self.ntypes) > 1 else self._num_nodes
 
+def cuda_index_tensor(tensor, idx):
+    assert(idx.device != th.device('cpu'))
+    if tensor.is_pinned():
+        return gather_pinned_tensor_rows(tensor, idx)
+    else:
+        return tensor[idx]
+
 class DistGraph(object):
     '''Distributed Graph object for GPUs
     
     We assume that torch.cuda.device() is called to set the GPU for the all processes
     We will rely on torch.cuda.current_device() to get the device.
     '''
-    def __init__(self, g, g_parts, replication=0, uva_ndata=[], uva_edata=[], cache_size=0, compress=False):
+    def __init__(self, g, g_parts, replication=0, uva_data=False, uva_ndata=[], cache_size=0, compress=False):
 
         assert(thd.is_available()
             and thd.is_initialized()
@@ -168,6 +175,7 @@ class DistGraph(object):
         
         self.device = th.cuda.current_device()
         cpu_device = th.device('cpu')
+        storage_device = self.device if not uva_data else cpu_device
         
         assert(g.device == cpu_device)
 
@@ -206,9 +214,9 @@ class DistGraph(object):
             uni_src = th.searchsorted(unique_src, new_src)
             uni_dst = th.searchsorted(unique_src, new_dst)
             # consider using dgl.create_block
-            self.g = LocalDGLGraph(graph((uni_src, uni_dst), num_nodes=unique_src.shape[0], device=self.device), g.num_nodes())
-            self.g.ndata[NID] = unique_src.to(self.device)
-            self.g.edata[EID] = my_g.edata[EID].to(self.device)
+            self.g = LocalDGLGraph(graph((uni_src, uni_dst), num_nodes=unique_src.shape[0], device=storage_device), g.num_nodes())
+            self.g.ndata[NID] = unique_src.to(storage_device)
+            self.g.edata[EID] = my_g.edata[EID].to(storage_device)
 
             self.node_ranges = th.tensor([0] * (self.group * self.group_size) + list(range(0, self.group_size + 1)) + [self.group_size] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device) * self.pow_of_two
 
@@ -227,18 +235,18 @@ class DistGraph(object):
             self.permute = th.tensor(permute, device=self.device)
             self.inv_permute = th.tensor(inv_permute, device=self.device)
 
-            self.pr = self.sorted_global_partition(self.g.ndata[NID], False)
+            self.pr = self.sorted_global_partition(self.g.ndata[NID], False).to(self.device)
             assert self.pr[self.rank + 1] - self.pr[self.rank] == num_dst_nodes
-            self.g_pr = self.sorted_global_partition(self.g.ndata[NID], True)
+            self.g_pr = self.sorted_global_partition(self.g.ndata[NID], True).to(self.device)
             
             self.l_offset = self.g_pr[permute[self.rank]].item()
 
             g_offset = self.l_rank * self.pow_of_two
 
-            self.dstdata = {NID: self.g.ndata[NID][self.g_pr[self.permute[self.rank]]: self.g_pr[self.permute[self.rank] + 1]]}
+            self.dstdata = {NID: self.g.ndata[NID][self.g_pr[self.permute[self.rank]].item(): self.g_pr[self.permute[self.rank] + 1].item()]}
             g_NID = (self.dstdata[NID] - g_offset + node_ranges[self.l_rank]).to(cpu_device)
         else:
-            self.g = my_g.to(self.device)
+            self.g = my_g.to(storage_device)
 
             self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
 
@@ -272,13 +280,20 @@ class DistGraph(object):
         
         for k, v in list(g.ndata.items()):
             if k != NID:
-                self.dstdata[k] = v[g_NID].to(self.device) if k not in uva_ndata else UnifiedTensor(v[g_NID], self.device)
+                this_uva_data = uva_data or k in uva_ndata
+                this_storage_device = cpu_device if this_uva_data else storage_device
+                self.dstdata[k] = v[g_NID].to(this_storage_device)
+                if this_uva_data:
+                    self.dstdata[k] = self.dstdata[k].pin_memory()
                 # g.ndata.pop(k)
         
         for k, v in list(g.edata.items()):
             if k != EID:
-                self.g.edata[k] = v[g_EID].to(self.device) if k not in uva_edata else UnifiedTensor(v[g_EID], self.device)
+                self.g.edata[k] = v[g_EID].to(storage_device)
                 # g.edata.pop(k)
+
+        if uva_data:
+            self.g.pin_memory_()
         
         print(self.rank, self.g.num_nodes(), self.pr, self.g_pr, self.l_offset, self.node_ranges, self.g_node_ranges, self.permute, self.inv_permute)
         pg_options = th._C._distributed_c10d.ProcessGroupNCCL.Options()
@@ -436,12 +451,12 @@ class DistGraph(object):
                 if k in self.caches:
                     cache = self.caches[k]
                     tensor, missing_index, missing_keys = cache.query(input_nodes)
-                    missing_values = self.dstdata[k][missing_keys.long()]
+                    missing_values = cuda_index_tensor(self.dstdata[k], missing_keys)
                     cache.replace(missing_keys, missing_values.to(th.float))
                     cache_miss = missing_keys.shape[0] / input_nodes.shape[0]
                     tensor[missing_index] = missing_values.to(tensor.dtype)
                 else:
-                    tensor = self.dstdata[k][input_nodes.long()].to(self.device, th.float) #
+                    tensor = cuda_index_tensor(self.dstdata[k], input_nodes).to(self.device, th.float) #
                 out = th.empty((sum(request_counts),) + tensor.shape[1:], dtype=tensor.dtype, device=tensor.device)
                 par_out = list(th.split(out, request_counts))
                 par_out = [par_out[i] for i in self.permute.tolist()]
@@ -460,10 +475,16 @@ class DistGraph(object):
         
         def label_slicer(block):
             for k in prefetch_labels:
-                block.dstdata[k] = self.dstdata[k][output_nodes - self.l_offset].to(self.device)
+                block.dstdata[k] = cuda_index_tensor(self.dstdata[k], output_nodes - self.l_offset).to(self.device)
+
+        def edge_slicer(block):
+            for k in prefetch_edge_feats:
+                block.edata[k] = cuda_index_tensor(self.g.edata[k], block.edata[EID]).to(self.device)
 
         blocks[0].slice_features = feature_slicer
         blocks[-1].slice_labels = label_slicer
+        for block in blocks:
+            block.slice_edges = edge_slicer
 
         blocks[-1].cached_variables2 = cached_variables
 
