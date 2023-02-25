@@ -178,6 +178,7 @@ def producer(args, g, idxs, reverse_eids, device):
     total_itemss = th.tensor(num_itemss, device=device)
     thd.all_reduce(total_itemss, thd.ReduceOp.SUM, g.comm)
     num_iterss = total_itemss // (g.world_size * args.batch_size)
+    events = [[th.cuda.Event(enable_timing=True) for _ in range(3)] for _ in range(2)]
     for epoch in range(args.num_epochs):
         with nvtx.annotate("epoch: {}".format(epoch), color="orange"):
             for dataloader_idx, (idx, num_items, num_iters) in enumerate(zip(idxs, num_itemss, num_iterss)):
@@ -186,21 +187,24 @@ def producer(args, g, idxs, reverse_eids, device):
                     i = slice(j * num_items // num_iters, (j + 1) * num_items // num_iters)
                     with nvtx.annotate("iteration: {}".format(it), color="yellow"):
                         seeds = idx[perm[i]] if not args.edge_pred else perm[i]
+                        events[it % 2][0].record()
                         out = sampler.sample(g.g, seeds.to(device)) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds.to(device))
+                        events[it % 2][1].record()
                         wait = out[-1][0].slice_features(out[-1][0])
                         out[-1][-1].slice_labels(out[-1][-1])
                         for block in out[-1]:
                             block.slice_edges(block)
-                        outputs[it % 2] = (dataloader_idx, it, epoch, out) + (wait,)
+                        events[it % 2][2].record()
+                        outputs[it % 2] = [dataloader_idx, it, epoch, out, wait]
                         it += 1
                         if it > 1:
                             out = outputs[it % 2]
                             out[-1]()
-                            yield out[:-1]
+                            yield out[:-1] + [events[it % 2]]
     it += 1
     out = outputs[it % 2]
     out[-1]()
-    yield out[:-1]
+    yield out[:-1] + [events[it % 2]]
 
 def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes, args):
     th.set_num_threads(os.cpu_count() // local_size)
@@ -278,6 +282,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     cnts = [0, 0]
     for out in producer(args, g, ([train_idx, val_idx] if not args.edge_pred else [None]), reverse_eids, device):
         dataloader_idx, it, epoch = out[:3]
+        events = out[4]
         out = out[3]
         input_nodes = out[0]
         blocks = out[-1]
@@ -315,7 +320,6 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             val_losses[dataloader_idx - 1] += loss.item() * y_hat.shape[0]
             cnts[dataloader_idx - 1] += y_hat.shape[0]
         mem = th.cuda.max_memory_allocated() >> 20
-        end.synchronize()
         if epoch != last_epoch:
             sched.step()
             last_epoch = epoch
@@ -324,9 +328,13 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
                     writer.add_scalar('val_acc/dataloader_idx_{}'.format(k), val_accs[k] / cnts[k], it)
                     writer.add_scalar('val_loss/dataloader_idx_{}'.format(k), val_losses[k] / cnts[k], it)
                     val_losses[k] = val_accs[k] = cnts[k] = 0
+        end.synchronize()
+        events[2].synchronize()
         iter_time = st.elapsed_time(end)
-        writer.add_scalar('iter_time', iter_time, it)
-        writer.add_scalar('forward_backward_time', fw_st.elapsed_time(end), it)
+        writer.add_scalar('time/iter', iter_time, it)
+        writer.add_scalar('time/sampling', events[0].elapsed_time(events[1]), it)
+        writer.add_scalar('time/feature_copy', events[1].elapsed_time(events[2]), it)
+        writer.add_scalar('time/forward_backward', fw_st.elapsed_time(end), it)
         writer.add_scalar('epoch', epoch, it)
         writer.add_scalar('cache_miss', x.cache_miss, it)
         if model.training:
