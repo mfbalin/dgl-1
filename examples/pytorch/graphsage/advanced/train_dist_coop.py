@@ -373,7 +373,9 @@ def main(args):
     if args.replication <= 0:
         args.replication = world_size
 
-    fn_list = [fn for fn in os.listdir(args.root_dir) if fn.startswith(args.dataset)]
+    undirected_suffix = '-undirected' if args.undirected else ''
+
+    fn_list = [fn for fn in os.listdir(args.root_dir) if fn.startswith(args.dataset + undirected_suffix)]
     if fn_list:
         gs, ls = dgl.load_graphs(os.path.join(args.root_dir, fn_list[0]))
         g = gs[0]
@@ -402,9 +404,11 @@ def main(args):
             parts = uniform_partition(g, world_size, False)
         g = reorder_graph_wrapper(g, parts)
 
-        dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}'.format(args.dataset, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
+        dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}'.format(args.dataset + undirected_suffix, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
 
     g = g.formats(['csc'])
+
+    args.dataset += undirected_suffix
 
     th.multiprocessing.spawn(train, args=(local_size, group_rank, world_size, g, [len(part) for part in parts], n_classes, args), nprocs=local_size)
 
