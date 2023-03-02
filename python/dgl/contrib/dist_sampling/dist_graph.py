@@ -125,9 +125,8 @@ class DistSampler(Sampler):
         self.output_device = self.g.device
 
         for i, sampler in enumerate(reversed(self.samplers)):
-            random_seed = self.g.get_random_seed(len(self.samplers))
             if hasattr(sampler, 'set_seed'):
-                sampler.set_seed(random_seed + (0 if sampler.layer_dependency else i))
+                sampler.set_seed(self.g.random_seed.item() + (0 if sampler.layer_dependency else i))
     
     def sample(self, g, seed_nodes, exclude_eids=None):
         # ignore g as we already store DistGraph
@@ -146,7 +145,7 @@ def cuda_index_tensor(tensor, idx):
     if tensor.is_pinned():
         return gather_pinned_tensor_rows(tensor, idx)
     else:
-        return tensor[idx]
+        return tensor[idx.long()]
 
 class DistGraph(object):
     '''Distributed Graph object for GPUs
@@ -183,7 +182,7 @@ class DistGraph(object):
 
         node_ranges = th.cumsum(th.tensor([0] + parts, device=cpu_device), dim=0)
 
-        my_g = in_subgraph(g, th.arange(node_ranges[self.l_rank], node_ranges[self.l_rank + 1]))
+        my_g = in_subgraph(g, th.arange(node_ranges[self.l_rank], node_ranges[self.l_rank + 1], dtype=g.idtype))
 
         for k, v in list(g.ndata.items()):
             my_g.ndata.pop(k)
@@ -274,7 +273,7 @@ class DistGraph(object):
             self.dstdata = {}
             g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
 
-        g_EID = self.g.edata[EID].to(cpu_device)
+        g_EID = self.g.edata[EID].to(cpu_device, th.int64)
 
         self.g = self.g.formats(['csc'])
         
@@ -372,10 +371,6 @@ class DistGraph(object):
         self.all_to_all(list(th.split(requested_nodes, requested_sizes)), par_nodes)
         requested_nodes = self.global_to_local(requested_nodes, self.rank)
         return requested_nodes, requested_sizes, request_counts
-
-    def get_random_seed(self, inc=1):
-        self.random_seed += inc
-        return self.random_seed.item()
     
     @nvtx.annotate("pull", color="purple")
     def pull(self, dsttensor, request_counts, requested_nodes, requested_sizes, dstnodes, inv_ids):

@@ -62,7 +62,7 @@ class continuous_seed {
         rnd = c[0] * curand_normal(&rng);
         curand_init(123123, s[1], t, &rng);
         rnd += c[1] * curand_normal(&rng);
-        rnd = normcdf(rnd);
+        rnd = normcdff(rnd);
     }
     else
       rnd = curand_uniform(&rng);

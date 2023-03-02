@@ -17,6 +17,8 @@
 #
 
 """Data loading components for labor sampling"""
+from numpy.random import default_rng
+
 from ..base import NID, EID
 from ..transforms import to_block
 from .base import BlockSampler
@@ -157,8 +159,7 @@ class LaborSampler(BlockSampler):
         self.cnt = F.zeros_like(choice(1e18, 2))
         self.cnt[0] = -1
         self.cnt[1] = batch_dependency
-        self.inc = 12345
-        self.set_seed(None if batch_dependency > 0 else choice(1e18, 1))
+        self.set_seed()
 
     def set_seed(self, random_seed=None):
         """Updates the underlying seed for the sampler
@@ -190,12 +191,21 @@ class LaborSampler(BlockSampler):
             self.cnt[0] += 1
             if self.cnt[1] > 0 and self.cnt[0] % self.cnt[1] == 0:
                 if not hasattr(self, 'random_seed') or self.cnt[1] <= 1:
-                    self.random_seed = choice(1e18, (2 if self.cnt[1] > 1 else 1))
+                    if not hasattr(self, 'rng'):
+                        self.rng = default_rng(choice(1e18, 1).item())
+                    self.random_seed = F.zeros(2 if self.cnt[1] > 1 else 1, F.int64, F.cpu())
+                    self.random_seed[0] = self.rng.integers(1e18)
+                    if self.cnt[1] > 1:
+                        self.random_seed[1] = self.rng.integers(1e18)
                 else:
                     self.random_seed[0] = self.random_seed[1]
-                    self.random_seed[1] += self.inc
+                    self.random_seed[1] = self.rng.integers(1e18)
         else:
-            self.random_seed = F.tensor(random_seed, F.int64) if self.cnt[1] <= 1 else F.tensor([random_seed, random_seed + self.inc], F.int64)
+            self.rng = default_rng(random_seed)
+            self.random_seed[0] = self.rng.integers(1e18)
+            if self.cnt[1] > 1:
+                self.random_seed[1] = self.rng.integers(1e18)
+            self.cnt[0] = 0
 
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         output_nodes = seed_nodes

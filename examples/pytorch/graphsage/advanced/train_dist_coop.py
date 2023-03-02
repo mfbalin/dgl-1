@@ -216,9 +216,9 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
 
     g = DistGraph(g, parts, args.replication, args.uva_data, args.uva_ndata.split(','), cache_size=args.cache_size)
 
-    train_idx = (th.nonzero(g.dstdata['train_mask'], as_tuple=True)[0] + g.l_offset).to(device)
-    val_idx = (th.nonzero(g.dstdata['val_mask'], as_tuple=True)[0] + g.l_offset).to(device)
-    test_idx = (th.nonzero(~(g.dstdata['train_mask'] | g.dstdata['val_mask']), as_tuple=True)[0] + g.l_offset).to(device)
+    train_idx = (th.nonzero(g.dstdata['train_mask'], as_tuple=True)[0] + g.l_offset).to(device, g.g.idtype)
+    val_idx = (th.nonzero(g.dstdata['val_mask'], as_tuple=True)[0] + g.l_offset).to(device, g.g.idtype)
+    test_idx = (th.nonzero(~(g.dstdata['train_mask'] | g.dstdata['val_mask']), as_tuple=True)[0] + g.l_offset).to(device, g.g.idtype)
     reverse_eids = None if 'is_reverse' not in g.g.edata else th.nonzero(g.g.edata['is_reverse'], as_tuple=True)[0]
     
     num_layers = args.num_layers
