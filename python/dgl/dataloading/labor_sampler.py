@@ -156,10 +156,10 @@ class LaborSampler(BlockSampler):
         self.importance_sampling = importance_sampling
         self.layer_dependency = layer_dependency
         self.sorted_src = sort_src
-        self.cnt = F.zeros_like(choice(1e18, 2))
+        self.cnt = F.zeros(2, F.int64, F.cpu())
         self.cnt[0] = -1
         self.cnt[1] = batch_dependency
-        self.set_seed()
+        self.set_seed(None if batch_dependency > 0 else choice(1e18, 1))
 
     def set_seed(self, random_seed=None):
         """Updates the underlying seed for the sampler
