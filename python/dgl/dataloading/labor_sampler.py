@@ -159,7 +159,8 @@ class LaborSampler(BlockSampler):
         self.cnt = F.zeros(2, F.int64, F.cpu())
         self.cnt[0] = -1
         self.cnt[1] = batch_dependency
-        self.set_seed(None if batch_dependency > 0 else choice(1e18, 1))
+        self.random_seed = F.zeros(2 if self.cnt[1] > 1 else 1, F.int64, F.cpu())
+        self.set_seed(None if batch_dependency > 0 else choice(1e18, 1).item())
 
     def set_seed(self, random_seed=None):
         """Updates the underlying seed for the sampler
@@ -190,10 +191,9 @@ class LaborSampler(BlockSampler):
         if random_seed is None:
             self.cnt[0] += 1
             if self.cnt[1] > 0 and self.cnt[0] % self.cnt[1] == 0:
-                if not hasattr(self, 'random_seed') or self.cnt[1] <= 1:
+                if self.cnt[0] <= 0 or self.cnt[1] <= 1:
                     if not hasattr(self, 'rng'):
                         self.rng = default_rng(choice(1e18, 1).item())
-                    self.random_seed = F.zeros(2 if self.cnt[1] > 1 else 1, F.int64, F.cpu())
                     self.random_seed[0] = self.rng.integers(1e18)
                     if self.cnt[1] > 1:
                         self.random_seed[1] = self.rng.integers(1e18)
