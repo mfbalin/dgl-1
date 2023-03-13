@@ -28,7 +28,7 @@ import torch.distributed as thd
 from ...subgraph import in_subgraph
 from ...base import NID, EID
 
-from ...utils import gather_pinned_tensor_rows
+from ...utils import gather_pinned_tensor_rows, pin_memory_inplace
 
 from ...convert import graph
 from ...heterograph_index import create_unitgraph_from_coo
@@ -132,14 +132,6 @@ class DistSampler(Sampler):
         # ignore g as we already store DistGraph
         return self.g.sample_blocks(seed_nodes, self.samplers, exclude_eids, self.prefetch_node_feats, self.prefetch_edge_feats, self.prefetch_labels)
 
-class LocalDGLGraph(DGLGraph):
-    def __init__(self, g, num_nodes):
-        super().__init__(g._graph, g._ntypes, g._etypes, g._node_frames, g._edge_frames)
-        self._num_nodes = num_nodes
-
-    def num_nodes(self, vtype=None):
-        return (self._num_nodes[vtype] if vtype is not None else sum(c for _, c in self._num_nodes.items())) if len(self.ntypes) > 1 else self._num_nodes
-
 def cuda_index_tensor(tensor, idx):
     assert(idx.device != th.device('cpu'))
     if tensor.is_pinned():
@@ -213,11 +205,11 @@ class DistGraph(object):
             uni_src = th.searchsorted(unique_src, new_src)
             uni_dst = th.searchsorted(unique_src, new_dst)
             # consider using dgl.create_block
-            self.g = LocalDGLGraph(graph((uni_src, uni_dst), num_nodes=unique_src.shape[0], device=storage_device), g.num_nodes())
+            self.g = graph((uni_src, uni_dst), num_nodes=unique_src.shape[0], device=storage_device)
             self.g.ndata[NID] = unique_src.to(storage_device)
             self.g.edata[EID] = my_g.edata[EID].to(storage_device)
 
-            self.node_ranges = th.tensor([0] * (self.group * self.group_size) + list(range(0, self.group_size + 1)) + [self.group_size] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device) * self.pow_of_two
+            self.node_ranges = th.tensor([0] * (self.group * self.group_size) + list(range(0, self.group_size + 1)) + [self.group_size] * ((self.num_groups - self.group - 1) * self.group_size), device=storage_device) * self.pow_of_two
 
             g_node_ranges = []
             cnts = [0] * self.group_size
@@ -230,7 +222,7 @@ class DistGraph(object):
                     cnts[j] += g_parts[rank]
             g_node_ranges.append(self.pow_of_two * self.group_size)
             inv_permute = sorted(range(len(permute)), key=permute.__getitem__)        
-            self.g_node_ranges = th.tensor(g_node_ranges, device=self.device)[inv_permute + [-1]]
+            self.g_node_ranges = th.tensor(g_node_ranges, device=storage_device)[inv_permute + [-1]]
             self.permute = th.tensor(permute, device=self.device)
             self.inv_permute = th.tensor(inv_permute, device=self.device)
 
@@ -241,6 +233,9 @@ class DistGraph(object):
             self.l_offset = self.g_pr[permute[self.rank]].item()
 
             g_offset = self.l_rank * self.pow_of_two
+
+            self.node_ranges = self.node_ranges.to(self.device)
+            self.g_node_ranges = self.g_node_ranges.to(self.device)
 
             self.dstdata = {NID: self.g.ndata[NID][self.g_pr[self.permute[self.rank]].item(): self.g_pr[self.permute[self.rank] + 1].item()]}
             g_NID = (self.dstdata[NID] - g_offset + node_ranges[self.l_rank]).to(cpu_device)
@@ -276,6 +271,7 @@ class DistGraph(object):
         g_EID = self.g.edata[EID].to(cpu_device, th.int64)
 
         self.g = self.g.formats(['csc'])
+        self.pindata = {}
         
         for k, v in list(g.ndata.items()):
             if k != NID:
@@ -283,7 +279,7 @@ class DistGraph(object):
                 this_storage_device = cpu_device if this_uva_data else storage_device
                 self.dstdata[k] = v[g_NID].to(this_storage_device)
                 if this_uva_data:
-                    self.dstdata[k] = self.dstdata[k].pin_memory()
+                    self.pindata[k] = pin_memory_inplace(self.dstdata[k])
                 # g.ndata.pop(k)
         
         for k, v in list(g.edata.items()):
@@ -357,7 +353,7 @@ class DistGraph(object):
     # local ids in, local ids out
     @nvtx.annotate("id exchange", color="purple")
     def exchange_node_ids(self, nodes, g_comm):
-        nodes = self.g.ndata[NID][nodes] if self.compress else nodes
+        nodes = cuda_index_tensor(self.g.ndata[NID], nodes) if self.compress else nodes
         partition = self.sorted_global_partition(nodes, g_comm)
         request_counts = th.diff(partition)
         received_request_counts = th.empty_like(request_counts)

@@ -27,6 +27,7 @@ from .. import ndarray as nd
 from .. import utils
 from .utils import EidExcluder
 from ..random import choice
+from ..base import NID
 
 __all__ = ["sample_labors"]
 
@@ -273,12 +274,21 @@ def _sample_labors(
     # nids_all_types is needed if one wants labor to work for subgraphs whose vertices have
     # been renamed and the rolled randoms should be rolled for global vertex ids.
     # It is disabled for now below by passing empty ndarrays.
-    nids_all_types = [nd.array([], ctx=ctx) for _ in g.ntypes]
+    # nids_all_types = [nd.array([], ctx=ctx) for _ in g.ntypes]
+    nids_all_types = []
     for ntype in g.ntypes:
         if ntype in nodes:
             nodes_all_types.append(F.to_dgl_nd(nodes[ntype]))
+            try:
+                if len(g.ntypes) > 1:
+                    nids_all_types.append(F.to_dgl_nd(g.ndata[NID][ntype]))
+                else:
+                    nids_all_types.append(F.to_dgl_nd(g.ndata[NID]))
+            except:
+                nids_all_types.append(nd.array([], ctx=ctx))
         else:
             nodes_all_types.append(nd.array([], ctx=ctx))
+            nids_all_types.append(nd.array([], ctx=ctx))
 
     if isinstance(fanout, nd.NDArray):
         fanout_array = fanout

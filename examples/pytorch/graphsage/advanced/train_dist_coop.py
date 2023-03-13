@@ -214,7 +214,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     global_rank = group_rank * local_size + local_rank
     thd.init_process_group('nccl', 'env://', world_size=world_size, rank=global_rank)
 
-    g = DistGraph(g, parts, args.replication, args.uva_data, args.uva_ndata.split(','), cache_size=args.cache_size)
+    g = DistGraph(g, parts, args.replication, args.uva_data, args.uva_ndata.split(','), cache_size=args.cache_size, compress=False)
 
     train_idx = (th.nonzero(g.dstdata['train_mask'], as_tuple=True)[0] + g.l_offset).to(device, g.g.idtype)
     val_idx = (th.nonzero(g.dstdata['val_mask'], as_tuple=True)[0] + g.l_offset).to(device, g.g.idtype)
