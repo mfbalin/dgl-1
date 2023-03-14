@@ -267,29 +267,34 @@ class DistGraph(object):
 
             self.dstdata = {}
             g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
+        
+        del my_g
 
         g_EID = self.g.edata[EID].to(cpu_device, th.int64)
 
         self.g = self.g.formats(['csc'])
         self.pindata = {}
-        
+
         for k, v in list(g.ndata.items()):
             if k != NID:
                 this_uva_data = uva_data or k in uva_ndata
                 this_storage_device = cpu_device if this_uva_data else storage_device
                 self.dstdata[k] = v[g_NID].to(this_storage_device)
                 if this_uva_data:
-                    self.pindata[k] = pin_memory_inplace(self.dstdata[k])
-                # g.ndata.pop(k)
+                    if compress:
+                        self.pindata[k] = pin_memory_inplace(self.dstdata[k])
+                    else:
+                        self.pindata[k] = pin_memory_inplace(v)
+            g.ndata.pop(k)
         
         for k, v in list(g.edata.items()):
             if k != EID:
                 self.g.edata[k] = v[g_EID].to(storage_device)
-                # g.edata.pop(k)
+            g.edata.pop(k)
 
         if uva_data:
             self.g.pin_memory_()
-        
+
         print(self.rank, self.g.num_nodes(), self.pr, self.g_pr, self.l_offset, self.node_ranges, self.g_node_ranges, self.permute, self.inv_permute)
         pg_options = th._C._distributed_c10d.ProcessGroupNCCL.Options()
         pg_options.is_high_priority_stream = True
