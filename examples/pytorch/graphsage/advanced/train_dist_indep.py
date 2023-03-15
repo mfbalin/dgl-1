@@ -38,16 +38,8 @@ def cuda_index_tensor(tensor, idx):
 def train(proc_id, n_gpus, args, g, num_classes, devices):
     device = devices[proc_id]
     torch.cuda.set_device(device)
-    dist_init_method = "tcp://{master_ip}:{master_port}".format(
-        master_ip="127.0.0.1", master_port="12346"
-    )
     world_size = n_gpus
-    torch.distributed.init_process_group(
-        backend="nccl",
-        init_method=dist_init_method,
-        world_size=world_size,
-        rank=proc_id,
-    )
+    torch.distributed.init_process_group('nccl', 'env://', world_size=world_size, rank=proc_id)
 
     train_idx = (torch.nonzero(g.ndata['train_mask'], as_tuple=True)[0]).to(device, g.idtype)
     val_idx = (torch.nonzero(g.ndata['val_mask'], as_tuple=True)[0]).to(device, g.idtype)
@@ -130,7 +122,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     cnts = [0, 0]
     events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
 
-    for epoch in range(args.epochs):
+    for epoch in range(args.num_epochs):
         def process_blocks(blocks):
             for block in blocks:
                 for data, k_stay in zip([block.srcdata, block.dstdata, block.edata], [[dgl.NID], [dgl.NID], [dgl.EID] + prefetch_edge_feats]):
@@ -196,9 +188,10 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             if model.training:
                 writer.add_scalar('train_loss_step', loss.item(), it)
                 writer.add_scalar('train_acc_step', acc.item(), it)
-            print('rank: {}, it: {}, dataloader_idx: {}, Loss: {:.4f}, Acc: {:.4f}, GPU Mem: {:.0f} MB, time: {:.3f}ms, stats: {}'.format(proc_id, it, 0, loss.item(), acc.item(), mem, iter_time, block_stats))
+            print('rank: {}, it: {}, dataloader_idx: {}, Loss: {:.4f}, Acc: {:.4f}, GPU Mem: {:.0f} MB, time: {:.3f}ms, stats: {}'.format(proc_id, it, dataloader_idx, loss.item(), acc.item(), mem, iter_time, block_stats))
             st, end = end, st
             it += 1
+            events[0].record()
 
         sched.step()
         for k in range(1):
@@ -291,7 +284,7 @@ if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--dataset', type=str, default='reddit')
     argparser.add_argument('--root-dir', type=str, default='/localscratch/ogb')
-    argparser.add_argument("--epochs", type=int, default=100, help="Number of epochs.")
+    argparser.add_argument("--num-epochs", type=int, default=100, help="Number of epochs.")
     argparser.add_argument('--logdir', type=str, default='tb_logs')
     argparser.add_argument("--submission-path", type=str, default="./results_ddp", help="Submission directory.")
     argparser.add_argument('--undirected', action='store_true')
