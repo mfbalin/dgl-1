@@ -326,6 +326,8 @@ if __name__ == "__main__":
         # g.edata['is_reverse'][reverse_eids] = True
         src, dst = g.all_edges()
         g.add_edges(dst, src)
+    
+    g = g.formats(['coo', 'csr', 'csc'])
 
     mp.spawn(
         train,

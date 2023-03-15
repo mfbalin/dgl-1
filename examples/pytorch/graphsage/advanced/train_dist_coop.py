@@ -270,10 +270,10 @@ def main(args):
 
         dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}'.format(args.dataset + undirected_suffix, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
 
-    g = g.formats(['csc'])
     cast_to_int = max(g.num_nodes(), g.num_edges()) <= 2e9
     if cast_to_int:
         g = g.int()
+    g = g.formats(['coo', 'csr', 'csc'])
 
     args.dataset += undirected_suffix
 
