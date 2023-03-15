@@ -36,6 +36,7 @@ def cuda_index_tensor(tensor, idx):
         return tensor[idx.long()]
 
 def train(proc_id, n_gpus, args, g, num_classes, devices):
+    torch.set_num_threads(os.cpu_count() // n_gpus)
     device = devices[proc_id]
     torch.cuda.set_device(device)
     world_size = n_gpus
@@ -116,7 +117,6 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     st, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     fw_st = torch.cuda.Event(enable_timing=True)
     st.record()
-    last_epoch = 0
     val_accs = [0, 0]
     val_losses = [0, 0]
     cnts = [0, 0]
@@ -198,6 +198,10 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             writer.add_scalar('val_acc/dataloader_idx_{}'.format(k), val_accs[k] / cnts[k], it)
             writer.add_scalar('val_loss/dataloader_idx_{}'.format(k), val_losses[k] / cnts[k], it)
             val_losses[k] = val_accs[k] = cnts[k] = 0
+    
+    writer.close()
+
+    torch.distributed.barrier()
 
 def test(args, dataset, g, split_idx, paper_offset):
     print("Loading masks and labels...")
@@ -307,6 +311,8 @@ if __name__ == "__main__":
     if n_gpus < 1:
         print("make sure the number of gpus greater than 0!")
         sys.exit()
+    
+    torch.set_num_threads(os.cpu_count())
 
     if args.dataset in ['ogbn-mag240M']:
         g, n_classes = load_mag240m(args.root_dir)
@@ -315,10 +321,11 @@ if __name__ == "__main__":
         g, n_classes = load_ogb(args.dataset, args.root_dir) if args.dataset.startswith("ogbn") else load_reddit()
 
     if args.undirected:
-        g, reverse_eids = to_bidirected_with_reverse_mapping(dgl.remove_self_loop(g))
-        g.edata['is_reverse'] = torch.zeros(g.num_edges(), dtype=torch.bool)
-        g.edata['is_reverse'][reverse_eids] = True
-
+        # g, reverse_eids = to_bidirected_with_reverse_mapping(dgl.remove_self_loop(g))
+        # g.edata['is_reverse'] = torch.zeros(g.num_edges(), dtype=torch.bool)
+        # g.edata['is_reverse'][reverse_eids] = True
+        src, dst = g.all_edges()
+        g.add_edges(dst, src)
 
     mp.spawn(
         train,
