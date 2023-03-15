@@ -2,6 +2,29 @@ import torch as th
 
 import dgl
 
+def to_bidirected_with_reverse_mapping(g):
+    """Makes a graph bidirectional, and returns a mapping array ``mapping`` where ``mapping[i]``
+    is the reverse edge of edge ID ``i``.
+    Does not work with graphs that have self-loops.
+    """
+    g_simple, mapping = dgl.to_simple(
+        dgl.add_reverse_edges(g), return_counts='count', writeback_mapping=True)
+    c = g_simple.edata['count']
+    num_edges = g.num_edges()
+    mapping_offset = th.zeros(g_simple.num_edges() + 1, dtype=g_simple.idtype)
+    mapping_offset[1:] = c.cumsum(0)
+    idx = mapping.argsort()
+    idx_uniq = idx[mapping_offset[:-1]]
+    reverse_idx = th.where(idx_uniq >= num_edges, idx_uniq - num_edges, idx_uniq + num_edges)
+    reverse_mapping = mapping[reverse_idx]
+
+    # Correctness check
+    src1, dst1 = g_simple.edges()
+    src2, dst2 = g_simple.find_edges(reverse_mapping)
+    assert th.equal(src1, dst2)
+    assert th.equal(src2, dst1)
+    return g_simple, reverse_mapping
+
 
 def load_reddit(self_loop=True):
     from dgl.data import RedditDataset

@@ -26,8 +26,7 @@ import torch.distributed.optim
 import torchmetrics.functional as MF
 from torch.utils.tensorboard import SummaryWriter
 import dgl
-import dgl.nn as dglnn
-from dgl.contrib.dist_sampling import DistConv, DistConvFunction, DistGraph, DistSampler, metis_partition, uniform_partition, uniform_partition_balanced, reorder_graph_wrapper
+from dgl.contrib.dist_sampling import DistGraph, DistSampler, metis_partition, uniform_partition, uniform_partition_balanced, reorder_graph_wrapper
 from dgl.transforms.functional import remove_self_loop
 import argparse
 import sys
@@ -35,140 +34,19 @@ import os
 import glob
 from contextlib import nullcontext
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from load_graph import load_reddit, load_ogb, load_mag240m
+from load_graph import load_reddit, load_ogb, load_mag240m, to_bidirected_with_reverse_mapping
+from dist_model import SAGE, RGAT, cross_entropy
 
 import nvtx
 
-# import heartrate
-# heartrate.trace(browser=True)
-    
-class SAGE(nn.Module):
-    def __init__(self, num_feats, dropout, replicated=False):
-        super().__init__()
-        self.layers = nn.ModuleList()
-        for i in range(len(num_feats) - 1):
-            last = i == len(num_feats) - 2
-            conv = dglnn.SAGEConv(num_feats[i], num_feats[i + 1], 'mean', feat_drop=0 if last else dropout, activation=nn.Identity() if last else nn.ReLU())
-            self.layers.append(DistConv(conv, i != 0 and not replicated))
-        self.num_feats = num_feats
-    
-    def forward(self, blocks, h):
-        # h is the dsttensor
-        for layer, block in zip(self.layers, blocks):
-            h = layer(block, h)
-        return h
-
-class RGAT(nn.Module):
-    def __init__(
-        self,
-        in_channels,
-        out_channels,
-        hidden_channels,
-        num_etypes,
-        num_layers,
-        num_heads,
-        dropout,
-        pred_ntype,
-        replicated=False
-    ):
-        super().__init__()
-        self.convs = nn.ModuleList()
-        self.norms = nn.ModuleList()
-        self.skips = nn.ModuleList()
-
-        self.convs.append(
-            nn.ModuleList(
-                [
-                    dglnn.GATConv(
-                        in_channels,
-                        hidden_channels // num_heads,
-                        num_heads,
-                        allow_zero_in_degree=True,
-                    )
-                    for _ in range(num_etypes)
-                ]
-            )
-        )
-        self.norms.append(nn.BatchNorm1d(hidden_channels))
-        self.skips.append(nn.Linear(in_channels, hidden_channels))
-        for _ in range(num_layers - 1):
-            self.convs.append(
-                nn.ModuleList(
-                    [
-                        dglnn.GATConv(
-                            hidden_channels,
-                            hidden_channels // num_heads,
-                            num_heads,
-                            allow_zero_in_degree=True,
-                        )
-                        for _ in range(num_etypes)
-                    ]
-                )
-            )
-            self.norms.append(nn.BatchNorm1d(hidden_channels))
-            self.skips.append(nn.Linear(hidden_channels, hidden_channels))
-
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden_channels, hidden_channels),
-            nn.BatchNorm1d(hidden_channels),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_channels, out_channels),
-        )
-        self.dropout = nn.Dropout(dropout)
-
-        self.hidden_channels = hidden_channels
-        self.pred_ntype = pred_ntype
-        self.num_etypes = num_etypes
-        self.replicated = replicated
-
-    def forward(self, mfgs, x):
-        for i in range(len(mfgs)):
-            mfg = mfgs[i]
-            if i != 0 and not self.replicated:
-                x = DistConvFunction.apply(mfg.cached_variables, x)
-            x_dst = x[mfg.dst_in_src]
-            n_src = mfg.num_src_nodes()
-            n_dst = mfg.num_dst_nodes()
-            mfg = dgl.block_to_graph(mfg)
-            x_skip = self.skips[i](x_dst)
-            for j in range(self.num_etypes):
-                subg = mfg.edge_subgraph(
-                    mfg.edata["etype"] == j, relabel_nodes=False
-                )
-                x_skip += self.convs[i][j](subg, (x, x_dst)).view(
-                    -1, self.hidden_channels
-                )
-            x = self.norms[i](x_skip)
-            x = F.elu(x)
-            x = self.dropout(x)
-        return self.mlp(x)
-
-def cross_entropy(block_outputs, cached_variables, pos_graph, neg_graph):
-    block_outputs = DistConvFunction.apply(cached_variables, block_outputs)
-    with pos_graph.local_scope():
-        pos_graph.ndata['h'] = block_outputs
-        pos_graph.apply_edges(dgl.function.u_dot_v('h', 'h', 'score'))
-        pos_score = pos_graph.edata['score']
-    with neg_graph.local_scope():
-        neg_graph.ndata['h'] = block_outputs
-        neg_graph.apply_edges(dgl.function.u_dot_v('h', 'h', 'score'))
-        neg_score = neg_graph.edata['score']
-
-    score = th.cat([pos_score, neg_score])
-    label = th.cat([th.ones_like(pos_score), th.zeros_like(neg_score)]).long()
-    loss = F.binary_cross_entropy_with_logits(score, label.float())
-    acc = th.sum((score >= 0.5) == (label >= 0.5)) / score.shape[0]
-    return loss, acc
-
-def producer(args, g, idxs, reverse_eids, device):
+def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
     fanouts = [int(_) for _ in args.fan_out.split(',')]
 
     if args.sampler == 'labor':
-        sampler = DistSampler(g, dgl.dataloading.LaborSampler, fanouts, ['features'], [], [] if args.edge_pred else ['labels'], importance_sampling=args.importance_sampling, layer_dependency=args.layer_dependency, batch_dependency=args.batch_dependency)
+        sampler = DistSampler(g, dgl.dataloading.LaborSampler, fanouts, ['features'], prefetch_edge_feats, [] if args.edge_pred else ['labels'], importance_sampling=args.importance_sampling, layer_dependency=args.layer_dependency, batch_dependency=args.batch_dependency)
     else:
-        sampler = DistSampler(g, dgl.dataloading.NeighborSampler, fanouts, ['features'], [], [] if args.edge_pred else ['labels'])
-    unbiased_sampler = DistSampler(g, dgl.dataloading.NeighborSampler, fanouts if True else [-1] * len(fanouts), ['features'], [], [] if args.edge_pred else ['labels'])
+        sampler = DistSampler(g, dgl.dataloading.NeighborSampler, fanouts, ['features'], prefetch_edge_feats, [] if args.edge_pred else ['labels'])
+    unbiased_sampler = DistSampler(g, dgl.dataloading.NeighborSampler, fanouts if True else [-1] * len(fanouts), ['features'], prefetch_edge_feats, [] if args.edge_pred else ['labels'])
     if args.edge_pred:
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids,
                     negative_sampler=dgl.dataloading.negative_sampler.Uniform(1))
@@ -235,12 +113,13 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             args.dropout,
             "paper",
             args.replication==1
-        )
+        ).to(device)
+        # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     else:
-        model = SAGE([g.dstdata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, args.replication == 1)
-    model = model.to(device)
+        model = SAGE([g.dstdata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, args.replication == 1).to(device)
 
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
+    model = nn.parallel.DistributedDataParallel(model.to(device), device_ids=[local_rank], output_device=local_rank)
     opt = th.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
     sched = th.optim.lr_scheduler.StepLR(opt, step_size=25, gamma=0.25)
 
@@ -280,7 +159,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     val_accs = [0, 0]
     val_losses = [0, 0]
     cnts = [0, 0]
-    for out in producer(args, g, ([train_idx, val_idx] if not args.edge_pred else [None]), reverse_eids, device):
+    for out in producer(args, g, ([train_idx, val_idx] if not args.edge_pred else [None]), reverse_eids, device, ['etype'] if args.dataset in ['ogbn-mag240M'] else []):
         dataloader_idx, it, epoch = out[:3]
         events = out[4]
         out = out[3]
@@ -346,29 +225,6 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     writer.close()
 
     thd.barrier()
-
-def to_bidirected_with_reverse_mapping(g):
-    """Makes a graph bidirectional, and returns a mapping array ``mapping`` where ``mapping[i]``
-    is the reverse edge of edge ID ``i``.
-    Does not work with graphs that have self-loops.
-    """
-    g_simple, mapping = dgl.to_simple(
-        dgl.add_reverse_edges(g), return_counts='count', writeback_mapping=True)
-    c = g_simple.edata['count']
-    num_edges = g.num_edges()
-    mapping_offset = torch.zeros(g_simple.num_edges() + 1, dtype=g_simple.idtype)
-    mapping_offset[1:] = c.cumsum(0)
-    idx = mapping.argsort()
-    idx_uniq = idx[mapping_offset[:-1]]
-    reverse_idx = torch.where(idx_uniq >= num_edges, idx_uniq - num_edges, idx_uniq + num_edges)
-    reverse_mapping = mapping[reverse_idx]
-
-    # Correctness check
-    src1, dst1 = g_simple.edges()
-    src2, dst2 = g_simple.find_edges(reverse_mapping)
-    assert torch.equal(src1, dst2)
-    assert torch.equal(src2, dst1)
-    return g_simple, reverse_mapping
 
 def main(args):
     # use all available CPUs
