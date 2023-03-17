@@ -20,11 +20,12 @@ from torch.nn.parallel import DistributedDataParallel
 from dgl.contrib.gpu_cache import GPUCache
 
 import glob
+from itertools import chain
 from contextlib import nullcontext
 
 from dist_model import SAGE, RGAT
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from load_graph import load_reddit, load_ogb, load_mag240m, to_bidirected_with_reverse_mapping
+from load_graph import load_reddit, load_ogb, load_mag240m
 
 from itertools import chain, repeat
 
@@ -52,9 +53,13 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     fanouts = [int(_) for _ in args.fan_out.split(',')]
     prefetch_edge_feats = ['etype'] if args.dataset in ['ogbn-mag240M'] else []
     if args.sampler == 'labor':
-        sampler = dgl.dataloading.LaborSampler(fanouts, importance_sampling=args.importance_sampling, layer_dependency=args.layer_dependency, batch_dependency=args.batch_dependency, prefetch_edge_feats=prefetch_edge_feats)
+        sampler = dgl.dataloading.LaborSampler(fanouts, importance_sampling=args.importance_sampling, layer_dependency=args.layer_dependency, batch_dependency=args.batch_dependency)
     else:
-        sampler = dgl.dataloading.NeighborSampler(fanouts, prefetch_edge_feats=prefetch_edge_feats)
+        sampler = dgl.dataloading.NeighborSampler(fanouts)
+
+    ndata = {k: g.ndata.pop(k) for k in ['features', 'labels']}
+    edata = {k: g.edata.pop(k) for k in prefetch_edge_feats}
+    pindata = {k: dgl.utils.pin_memory_inplace(v) for k, v in chain(ndata.items(), edata.items())}
 
     train_dataloader = dgl.dataloading.DataLoader(
         g,
@@ -84,7 +89,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     print("Initializing model...")
     if args.dataset in ['ogbn-mag240M']:
         model = RGAT(
-            g.ndata['features'].shape[1],
+            ndata['features'].shape[1],
             num_classes,
             num_hidden,
             5,
@@ -97,13 +102,13 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
         # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     else:
-        model = SAGE([g.ndata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, True).to(device)
+        model = SAGE([ndata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, True).to(device)
 
     model = DistributedDataParallel(model.to(device), device_ids=[device], output_device=device)
     opt = torch.optim.Adam(model.parameters(), lr=0.001)
     sched = torch.optim.lr_scheduler.StepLR(opt, step_size=25, gamma=0.25)
 
-    caches = {} if args.cache_size <= 0 else {key: GPUCache(args.cache_size, g.ndata[key].shape[1], g.idtype) for key in args.uva_ndata.split(',')}
+    caches = {} if args.cache_size <= 0 else {key: GPUCache(args.cache_size, ndata[key].shape[1], g.idtype) for key in args.uva_ndata.split(',')}
 
     it = 0
 
@@ -124,25 +129,23 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
 
     for epoch in range(args.num_epochs):
         def process_blocks(blocks):
-            for block in blocks:
-                for data, k_stay in zip([block.srcdata, block.dstdata, block.edata], [[dgl.NID], [dgl.NID], [dgl.EID] + prefetch_edge_feats]):
-                    for k in list(data):
-                        if k not in k_stay:
-                            data.pop(k)
             for k in ['features']:
                 cache_miss = 1
                 if k in caches:
                     cache = caches[k]
                     tensor, missing_index, missing_keys = cache.query(input_nodes)
-                    missing_values = cuda_index_tensor(g.ndata[k], missing_keys)
+                    missing_values = cuda_index_tensor(ndata[k], missing_keys)
                     cache.replace(missing_keys, missing_values.to(torch.float))
                     cache_miss = missing_keys.shape[0] / input_nodes.shape[0]
                     tensor[missing_index] = missing_values.to(tensor.dtype)
                 else:
-                    tensor = cuda_index_tensor(g.ndata[k], blocks[0].srcdata[dgl.NID]).to(torch.float)
+                    tensor = cuda_index_tensor(ndata[k], blocks[0].srcdata[dgl.NID]).to(torch.float)
                 tensor.cache_miss = cache_miss
                 blocks[0].srcdata[k] = tensor
-            blocks[-1].dstdata['labels'] = cuda_index_tensor(g.ndata['labels'], blocks[-1].dstdata[dgl.NID])
+            for k in prefetch_edge_feats:
+                for block in blocks:
+                    block.edata[k] = cuda_index_tensor(edata[k], block.edata[dgl.EID])
+            blocks[-1].dstdata['labels'] = cuda_index_tensor(ndata['labels'], blocks[-1].dstdata[dgl.NID])
             return blocks
         
         events[0].record()
