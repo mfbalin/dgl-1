@@ -117,6 +117,8 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
     logdir = '{}/version_{}_{}'.format(logdir, proc_id, version)
 
+    torch.distributed.barrier()
+
     writer = SummaryWriter(logdir)
     
     st, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)

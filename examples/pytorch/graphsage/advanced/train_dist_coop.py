@@ -149,6 +149,8 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     dirs = glob.glob('{}/*'.format(logdir))
     version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
     logdir = '{}/version_{}_{}'.format(logdir, global_rank, version)
+
+    thd.barrier()
     
     writer = SummaryWriter(logdir)
     
