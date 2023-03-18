@@ -111,7 +111,6 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             num_layers,
             4,
             args.dropout,
-            "paper",
             args.model == 'rgat',
             args.replication==1
         ).to(device)

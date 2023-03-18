@@ -16,8 +16,7 @@ class SAGE(nn.Module):
             last = i == len(num_feats) - 2
             conv = dglnn.SAGEConv(num_feats[i], num_feats[i + 1], 'mean', feat_drop=0 if last else dropout, activation=nn.Identity() if last else nn.ReLU())
             self.layers.append(DistConv(conv, i != 0 and not replicated))
-        self.num_feats = num_feats
-    
+
     def forward(self, blocks, h):
         # h is the dsttensor
         for layer, block in zip(self.layers, blocks):
@@ -25,33 +24,28 @@ class SAGE(nn.Module):
         return h
 
 class RGCN(nn.Module):
-    def __init__(self, num_nodes, feats, num_rels, num_bases):
+    def __init__(self, num_feats, num_rels, num_bases, dropout, replicated=False):
         super().__init__()
-        self.emb = nn.Embedding(num_nodes, h_dim)
-        # two-layer RGCN
-        self.conv1 = dglnn.CuGraphRelGraphConv(
-            h_dim,
-            h_dim,
-            num_rels,
-            regularizer="basis",
-            num_bases=num_bases,
-            self_loop=True,
-            apply_norm=True,
-        )
-        self.conv2 = dglnn.CuGraphRelGraphConv(
-            h_dim,
-            out_dim,
-            num_rels,
-            regularizer="basis",
-            num_bases=num_bases,
-            self_loop=True,
-            apply_norm=True,
-        )
+        self.layers = nn.ModuleList()
+        for i in range(len(num_feats) - 1):
+            last = i == len(num_feats) - 2
+            conv = dglnn.CuGraphRelGraphConv(
+                num_feats[i],
+                num_feats[i + 1],
+                num_rels,
+                regularizer="basis",
+                num_bases=num_bases,
+                activation=nn.Identity() if last else nn.ReLU(),
+                self_loop=True,
+                dropout=0 if last else dropout,
+                layer_norm=True
+            )
+            self.layers.append(DistConv(conv, i != 0 and not replicated))
 
-    def forward(self, g, fanouts=[None, None]):
-        x = self.emb(g[0].srcdata[dgl.NID])
-        h = F.relu(self.conv1(g[0], x, g[0].edata[dgl.ETYPE], fanouts[0]))
-        h = self.conv2(g[1], h, g[1].edata[dgl.ETYPE], fanouts[1])
+    def forward(self, blocks, h):
+        # h is the dsttensor
+        for layer, block in zip(self.layers, blocks):
+            h = layer(block, h, block.edata[dgl.ETYPE])
         return h
 
 class RGAT(nn.Module):
@@ -64,7 +58,6 @@ class RGAT(nn.Module):
         num_layers,
         num_heads,
         dropout,
-        pred_ntype,
         gat=True,
         replicated=False
     ):
@@ -119,7 +112,6 @@ class RGAT(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.hidden_channels = hidden_channels
-        self.pred_ntype = pred_ntype
         self.num_etypes = num_etypes
         self.replicated = replicated
 

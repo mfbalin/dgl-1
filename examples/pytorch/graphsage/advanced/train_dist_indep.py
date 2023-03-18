@@ -23,7 +23,7 @@ import glob
 from itertools import chain
 from contextlib import nullcontext
 
-from dist_model import SAGE, RGAT
+from dist_model import SAGE, RGAT, RGCN
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m
 
@@ -92,20 +92,22 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
 
     print("Initializing model...")
     if args.dataset in ['ogbn-mag240M']:
-        model = RGAT(
-            ndata['features'].shape[1],
-            num_classes,
-            num_hidden,
-            5,
-            num_layers,
-            4,
-            args.dropout,
-            "paper",
-            args.model == 'rgat',
-            True
-        ).to(device)
-        # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
-        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        if True:
+            model = RGAT(
+                ndata['features'].shape[1],
+                num_classes,
+                num_hidden,
+                5,
+                num_layers,
+                4,
+                args.dropout,
+                args.model == 'rgat',
+                True
+            ).to(device)
+            # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
+            model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        else:
+            model = RGCN([ndata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], 5, 2, args.dropout, True)
     else:
         model = SAGE([ndata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, True).to(device)
 
