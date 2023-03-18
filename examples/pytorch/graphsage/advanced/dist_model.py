@@ -27,26 +27,43 @@ class RGCN(nn.Module):
     def __init__(self, num_feats, num_rels, num_bases, dropout, replicated=False):
         super().__init__()
         self.layers = nn.ModuleList()
+        self.skips = nn.ModuleList()
+        self.norms = nn.ModuleList()
         for i in range(len(num_feats) - 1):
             last = i == len(num_feats) - 2
-            conv = dglnn.CuGraphRelGraphConv(
+            next_hidden = num_feats[i + 1] if not last else num_feats[i]
+            conv = dglnn.RelGraphConv(
                 num_feats[i],
-                num_feats[i + 1],
+                next_hidden,
                 num_rels,
                 regularizer="basis",
                 num_bases=num_bases,
-                activation=nn.Identity() if last else nn.ReLU(),
+                activation=nn.Identity(),
                 self_loop=True,
-                dropout=0 if last else dropout,
-                layer_norm=True
+                dropout=0,
+                layer_norm=False
             )
             self.layers.append(DistConv(conv, i != 0 and not replicated))
+            self.skips.append(nn.Linear(num_feats[i], next_hidden))
+            self.norms.append(nn.BatchNorm1d(next_hidden))
+        self.dropout = nn.Dropout(dropout)
+        self.mlp = nn.Sequential(
+            nn.Linear(next_hidden, next_hidden),
+            nn.BatchNorm1d(next_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(next_hidden, num_feats[-1])
+        )
 
     def forward(self, blocks, h):
         # h is the dsttensor
-        for layer, block in zip(self.layers, blocks):
-            h = layer(block, h, block.edata[dgl.ETYPE])
-        return h
+        for i, block in enumerate(blocks):
+            h_dst = h[block.dst_in_src]
+            h = self.layers[i](block, h, block.edata[dgl.ETYPE]) + self.skips[i](h_dst)
+            h = self.norms[i](h)
+            h = F.elu(h)
+            h = self.dropout(h)
+        return self.mlp(h)
 
 class RGAT(nn.Module):
     def __init__(

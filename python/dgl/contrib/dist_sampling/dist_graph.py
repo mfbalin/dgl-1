@@ -109,10 +109,10 @@ class DistConv(th.nn.Module):
         self.pull = pull
         self.layer = conv
     
-    def forward(self, block, h):
+    def forward(self, block, h, *args):
         if self.pull:
             h = DistConvFunction.apply(block.cached_variables, h)
-        return self.layer(block, h)
+        return self.layer(block, h, *args)
 
 class DistSampler(Sampler):
     def __init__(self, g, sampler_t, fanouts, prefetch_node_feats=[], prefetch_edge_feats=[], prefetch_labels=[], **kwargs):
@@ -284,7 +284,7 @@ class DistGraph(object):
 
         self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
         thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
-        random_seed = random_seed.item()
+        random_seed = self.random_seed.item()
 
         g_EID = self.g.edata[EID].to(cpu_device, th.int64)
 

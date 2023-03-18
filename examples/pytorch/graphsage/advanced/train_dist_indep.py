@@ -92,7 +92,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
 
     print("Initializing model...")
     if args.dataset in ['ogbn-mag240M']:
-        if True:
+        if args.model == 'rgat':
             model = RGAT(
                 ndata['features'].shape[1],
                 num_classes,
@@ -104,10 +104,10 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
                 args.model == 'rgat',
                 True
             ).to(device)
-            # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
-            model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         else:
-            model = RGCN([ndata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], 5, 2, args.dropout, True)
+            model = RGCN([ndata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], 5, 2, args.dropout, True).to(device)
+        # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     else:
         model = SAGE([ndata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, True).to(device)
 

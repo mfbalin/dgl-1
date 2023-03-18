@@ -35,7 +35,7 @@ import glob
 from contextlib import nullcontext
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m, to_bidirected_with_reverse_mapping
-from dist_model import SAGE, RGAT, cross_entropy
+from dist_model import SAGE, RGAT, RGCN, cross_entropy
 
 import nvtx
 
@@ -103,21 +103,24 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     num_hidden = args.num_hidden
 
     if args.dataset in ['ogbn-mag240M']:
-        model = RGAT(
-            g.dstdata['features'].shape[1],
-            num_classes,
-            num_hidden,
-            5,
-            num_layers,
-            4,
-            args.dropout,
-            args.model == 'rgat',
-            args.replication==1
-        ).to(device)
+        if args.model == 'rgat':
+            model = RGAT(
+                g.dstdata['features'].shape[1],
+                num_classes,
+                num_hidden,
+                5,
+                num_layers,
+                4,
+                args.dropout,
+                args.model == 'rgat',
+                args.replication==1
+            ).to(device)
+        else:
+            model = RGCN([g.dstdata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], 5, 2, args.dropout, args.replication==1).to(device)
         # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     else:
-        model = SAGE([g.dstdata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, args.replication == 1).to(device)
+        model = SAGE([g.dstdata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, args.replication==1).to(device)
 
     model = nn.parallel.DistributedDataParallel(model.to(device), device_ids=[local_rank], output_device=local_rank)
     opt = th.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
