@@ -61,7 +61,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     edata = {k: g.edata.pop(k) for k in prefetch_edge_feats}
     pindata = {k: dgl.utils.pin_memory_inplace(v) for k, v in chain(ndata.items(), edata.items())}
 
-    for data in zip(g.ndata, g.edata):
+    for data in [g.ndata, g.edata]:
         for k in list(data):
             data.pop(k)
 
