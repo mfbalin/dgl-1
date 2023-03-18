@@ -32,7 +32,7 @@ class RGCN(nn.Module):
         for i in range(len(num_feats) - 1):
             last = i == len(num_feats) - 2
             next_hidden = num_feats[i + 1] if not last else num_feats[i]
-            conv = dglnn.RelGraphConv(
+            self.layers.append(dglnn.RelGraphConv(
                 num_feats[i],
                 next_hidden,
                 num_rels,
@@ -42,8 +42,7 @@ class RGCN(nn.Module):
                 self_loop=True,
                 dropout=0,
                 layer_norm=False
-            )
-            self.layers.append(DistConv(conv, i != 0 and not replicated))
+            ))
             self.skips.append(nn.Linear(num_feats[i], next_hidden))
             self.norms.append(nn.BatchNorm1d(next_hidden))
         self.dropout = nn.Dropout(dropout)
@@ -58,6 +57,8 @@ class RGCN(nn.Module):
     def forward(self, blocks, h):
         # h is the dsttensor
         for i, block in enumerate(blocks):
+            if i != 0 and not self.replicated:
+                h = DistConvFunction.apply(block.cached_variables, h)
             h_dst = h[block.dst_in_src]
             h = self.layers[i](block, h, block.edata[dgl.ETYPE]) + self.skips[i](h_dst)
             h = self.norms[i](h)
