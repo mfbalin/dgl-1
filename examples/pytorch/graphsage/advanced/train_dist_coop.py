@@ -150,7 +150,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
     logdir = '{}/version_{}_{}'.format(logdir, global_rank, version)
 
-    thd.barrier()
+    thd.barrier(g.comm)
     
     writer = SummaryWriter(logdir)
     
@@ -275,8 +275,7 @@ def main(args):
     cast_to_int = max(g.num_nodes(), g.num_edges()) <= 2e9
     if cast_to_int:
         g = g.int()
-    g.create_formats_()
-    os.environ["OMP_NUM_THREADS"] = str(th.multiprocessing.cpu_count() // 2 // local_size)
+    g = g.formats(['csc'])
 
     args.dataset += undirected_suffix
 
