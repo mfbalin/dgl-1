@@ -170,6 +170,15 @@ class DistGraph(object):
         
         assert(g.device == cpu_device)
 
+        pg_options = th._C._distributed_c10d.ProcessGroupNCCL.Options()
+        pg_options.is_high_priority_stream = True
+        pg_options._timeout = timedelta(minutes=1)
+        self.comm = thd.new_group(ranks=None, backend='nccl', pg_options=pg_options)
+        self.l_comm = self.comm
+        if self.group_size < self.world_size:
+            self.l_comms = [thd.new_group(ranks=range(group * self.group_size, (group + 1) * self.group_size), backend='nccl', pg_options=pg_options) for group in range(self.num_groups)]
+            self.l_comm = self.l_comms[self.group]
+
         parts = [sum(g_parts[i * self.num_groups: (i + 1) * self.num_groups]) for i in range(self.group_size)]
 
         node_ranges = th.cumsum(th.tensor([0] + parts, device=cpu_device), dim=0)
@@ -273,6 +282,10 @@ class DistGraph(object):
         
         del my_g
 
+        self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
+        thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
+        random_seed = random_seed.item()
+
         g_EID = self.g.edata[EID].to(cpu_device, th.int64)
 
         self.g = self.g.formats(['csc'])
@@ -298,17 +311,7 @@ class DistGraph(object):
         if uva_data:
             self.g.pin_memory_()
 
-        print(self.rank, self.g.num_nodes(), self.pr, self.g_pr, self.l_offset, self.node_ranges, self.g_node_ranges, self.permute, self.inv_permute)
-        pg_options = th._C._distributed_c10d.ProcessGroupNCCL.Options()
-        pg_options.is_high_priority_stream = True
-        pg_options._timeout = timedelta(minutes=1)
-        self.comm = thd.new_group(ranks=None, backend='nccl', pg_options=pg_options)
-        self.l_comm = self.comm
-        if self.group_size < self.world_size:
-            self.l_comms = [thd.new_group(ranks=range(group * self.group_size, (group + 1) * self.group_size), backend='nccl', pg_options=pg_options) for group in range(self.num_groups)]
-            self.l_comm = self.l_comms[self.group]
-        self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
-        thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
+        print(self.rank, self.g.num_nodes(), self.g.num_edges(), self.pr, self.g_pr, self.l_offset, self.node_ranges, self.g_node_ranges, self.permute, self.inv_permute, random_seed)
         self.last_comm = self.comm
         self.works = []
         self.caches = {} if cache_size <= 0 else {key: GPUCache(cache_size, self.dstdata[key].shape[1], g.idtype) for key in uva_ndata}
