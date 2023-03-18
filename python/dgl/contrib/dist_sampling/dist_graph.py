@@ -282,10 +282,6 @@ class DistGraph(object):
         
         del my_g
 
-        self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
-        thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
-        random_seed = self.random_seed.item()
-
         g_EID = self.g.edata[EID].to(cpu_device, th.int64)
 
         self.g = self.g.formats(['csc'])
@@ -311,6 +307,10 @@ class DistGraph(object):
         if uva_data:
             self.g.pin_memory_()
 
+        self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
+        thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
+        random_seed = self.random_seed.item()
+        
         print(self.rank, self.g.num_nodes(), self.g.num_edges(), self.pr, self.g_pr, self.l_offset, self.node_ranges, self.g_node_ranges, self.permute, self.inv_permute, random_seed)
         self.last_comm = self.comm
         self.works = []
