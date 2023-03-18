@@ -240,7 +240,10 @@ class DistGraph(object):
             self.dstdata = {NID: self.g.ndata[NID][self.g_pr[self.permute[self.rank]].item(): self.g_pr[self.permute[self.rank] + 1].item()]}
             g_NID = (self.dstdata[NID] - g_offset + node_ranges[self.l_rank]).to(cpu_device)
         else:
-            self.g = my_g.to(storage_device)
+            # self.g = my_g.to(storage_device)
+            src, dst, eid = my_g.edges(form='all')
+            self.g = graph((src, dst), num_nodes=g.num_nodes(), device=storage_device)
+            self.g.edata[EID] = eid.to(storage_device)
 
             self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
 
