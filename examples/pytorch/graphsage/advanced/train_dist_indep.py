@@ -131,6 +131,11 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
 
     for epoch in range(args.num_epochs):
         def process_blocks(blocks):
+            for block in blocks:
+                for data, k_stay in zip([block.srcdata, block.dstdata, block.edata], [[dgl.NID], [dgl.NID], [dgl.EID]]):
+                    for k in list(data):
+                        if k not in k_stay:
+                            data.pop(k)
             for k in ['features']:
                 cache_miss = 1
                 if k in caches:
