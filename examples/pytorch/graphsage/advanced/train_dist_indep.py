@@ -332,7 +332,8 @@ if __name__ == "__main__":
         src, dst = g.all_edges()
         g.add_edges(dst, src)
     
-    g = g.formats(['coo', 'csr', 'csc'])
+    g.create_formats_()
+    os.environ["OMP_NUM_THREADS"] = str(mp.cpu_count() // 2 // n_gpus)
 
     mp.spawn(
         train,

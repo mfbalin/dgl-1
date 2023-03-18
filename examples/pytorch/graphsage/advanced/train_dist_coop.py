@@ -275,7 +275,8 @@ def main(args):
     cast_to_int = max(g.num_nodes(), g.num_edges()) <= 2e9
     if cast_to_int:
         g = g.int()
-    g = g.formats(['coo', 'csr', 'csc'])
+    g.create_formats_()
+    os.environ["OMP_NUM_THREADS"] = str(th.multiprocessing.cpu_count() // 2 // local_size)
 
     args.dataset += undirected_suffix
 
