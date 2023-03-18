@@ -101,6 +101,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             4,
             args.dropout,
             "paper",
+            args.model == 'rgat',
             True
         ).to(device)
         # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
@@ -302,6 +303,7 @@ if __name__ == "__main__":
     argparser.add_argument("--submission-path", type=str, default="./results_ddp", help="Submission directory.")
     argparser.add_argument('--undirected', action='store_true')
     argparser.add_argument('--num-hidden', type=int, default=256)
+    argparser.add_argument('--model', type=str, default='rgat')
     argparser.add_argument('--num-layers', type=int, default=3)
     argparser.add_argument('--dropout', type=float, default=0.5)
     argparser.add_argument('--batch-size', type=int, default=1000)

@@ -35,6 +35,7 @@ class RGAT(nn.Module):
         num_heads,
         dropout,
         pred_ntype,
+        gat=True,
         replicated=False
     ):
         super().__init__()
@@ -51,6 +52,8 @@ class RGAT(nn.Module):
                         num_heads,
                         allow_zero_in_degree=True,
                     )
+                    if gat else
+                    dglnn.SAGEConv(in_channels, hidden_channels, 'mean', dropout, activation=nn.Identity())
                     for _ in range(num_etypes)
                 ]
             )
@@ -67,6 +70,8 @@ class RGAT(nn.Module):
                             num_heads,
                             allow_zero_in_degree=True,
                         )
+                        if gat else
+                        dglnn.SAGEConv(hidden_channels, hidden_channels, 'mean', dropout, activation=nn.Identity())
                         for _ in range(num_etypes)
                     ]
                 )

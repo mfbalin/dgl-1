@@ -112,6 +112,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             4,
             args.dropout,
             "paper",
+            args.model == 'rgat',
             args.replication==1
         ).to(device)
         # convert BN to SyncBatchNorm. see https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html
@@ -291,6 +292,7 @@ if __name__ == '__main__':
     argparser.add_argument('--fan-out', type=str, default='10,10,10')
     argparser.add_argument('--batch-size', type=int, default=1000)
     argparser.add_argument('--lr', type=float, default=0.001)
+    argparser.add_argument('--model', type=str, default='rgat')
     argparser.add_argument('--sampler', type=str, default='labor')
     argparser.add_argument('--importance-sampling', type=int, default=0)
     argparser.add_argument('--layer-dependency', action='store_true')
