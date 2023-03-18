@@ -53,6 +53,7 @@ class RGCN(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(next_hidden, num_feats[-1])
         )
+        self.replicated = replicated
 
     def forward(self, blocks, h):
         # h is the dsttensor
