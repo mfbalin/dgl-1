@@ -226,7 +226,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     
     writer.close()
 
-    thd.barrier()
+    thd.barrier(g.comm)
 
 def main(args):
     # use all available CPUs

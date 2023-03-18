@@ -61,6 +61,10 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     edata = {k: g.edata.pop(k) for k in prefetch_edge_feats}
     pindata = {k: dgl.utils.pin_memory_inplace(v) for k, v in chain(ndata.items(), edata.items())}
 
+    for data in zip(g.ndata, g.edata):
+        for k in list(data):
+            data.pop(k)
+
     train_dataloader = dgl.dataloading.DataLoader(
         g,
         train_idx,
@@ -131,11 +135,6 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
 
     for epoch in range(args.num_epochs):
         def process_blocks(blocks):
-            for block in blocks:
-                for data, k_stay in zip([block.srcdata, block.dstdata, block.edata], [[dgl.NID], [dgl.NID], [dgl.EID]]):
-                    for k in list(data):
-                        if k not in k_stay:
-                            data.pop(k)
             for k in ['features']:
                 cache_miss = 1
                 if k in caches:
