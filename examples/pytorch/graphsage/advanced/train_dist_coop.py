@@ -162,7 +162,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     val_accs = [0, 0]
     val_losses = [0, 0]
     cnts = [0, 0]
-    for out in producer(args, g, ([train_idx, val_idx] if not args.edge_pred else [None]), reverse_eids, device, ['etype'] if args.dataset in ['ogbn-mag240M'] else []):
+    for out in producer(args, g, ([train_idx, val_idx] if not args.edge_pred else [None]), reverse_eids, device, [dgl.ETYPE] if args.dataset in ['ogbn-mag240M'] else []):
         dataloader_idx, it, epoch = out[:3]
         events = out[4]
         out = out[3]
@@ -248,6 +248,8 @@ def main(args):
         g = gs[0]
         n_classes = ls['n_classes'][0].item()
         parts = [th.arange(i * g.num_nodes() // world_size, (i + 1) * g.num_nodes() // world_size) for i in range(world_size)]
+        if 'etype' in g.edata:
+            g.edata[dgl.ETYPE] = g.edata.pop('etype')
     else:
         if args.dataset in ['ogbn-mag240M']:
             g, n_classes = load_mag240m(args.root_dir)

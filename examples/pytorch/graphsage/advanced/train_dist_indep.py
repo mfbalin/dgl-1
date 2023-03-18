@@ -51,7 +51,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
 
     print("Initializing dataloader...")
     fanouts = [int(_) for _ in args.fan_out.split(',')]
-    prefetch_edge_feats = ['etype'] if args.dataset in ['ogbn-mag240M'] else []
+    prefetch_edge_feats = [dgl.ETYPE] if args.dataset in ['ogbn-mag240M'] else []
     if args.sampler == 'labor':
         sampler = dgl.dataloading.LaborSampler(fanouts, importance_sampling=args.importance_sampling, layer_dependency=args.layer_dependency, batch_dependency=args.batch_dependency)
     else:

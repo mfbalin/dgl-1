@@ -74,7 +74,7 @@ def load_mag240m(root="dataset"):
     g.ndata["labels"] = - th.ones(g.number_of_nodes(), dtype=th.uint8)
     g.ndata["labels"][train_nid] = labels[train_nid - paper_offset]
     g.ndata["labels"][val_nid] = labels[val_nid - paper_offset]
-    g.edata['etype'] = g.edata['etype'].to(th.int8)
+    g.edata[dgl.ETYPE] = g.edata.pop('etype').to(th.int8)
     return g, num_labels
 
 def load_ogb(name, root="dataset"):

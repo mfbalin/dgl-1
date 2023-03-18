@@ -24,6 +24,36 @@ class SAGE(nn.Module):
             h = layer(block, h)
         return h
 
+class RGCN(nn.Module):
+    def __init__(self, num_nodes, feats, num_rels, num_bases):
+        super().__init__()
+        self.emb = nn.Embedding(num_nodes, h_dim)
+        # two-layer RGCN
+        self.conv1 = dglnn.CuGraphRelGraphConv(
+            h_dim,
+            h_dim,
+            num_rels,
+            regularizer="basis",
+            num_bases=num_bases,
+            self_loop=True,
+            apply_norm=True,
+        )
+        self.conv2 = dglnn.CuGraphRelGraphConv(
+            h_dim,
+            out_dim,
+            num_rels,
+            regularizer="basis",
+            num_bases=num_bases,
+            self_loop=True,
+            apply_norm=True,
+        )
+
+    def forward(self, g, fanouts=[None, None]):
+        x = self.emb(g[0].srcdata[dgl.NID])
+        h = F.relu(self.conv1(g[0], x, g[0].edata[dgl.ETYPE], fanouts[0]))
+        h = self.conv2(g[1], h, g[1].edata[dgl.ETYPE], fanouts[1])
+        return h
+
 class RGAT(nn.Module):
     def __init__(
         self,
@@ -103,7 +133,7 @@ class RGAT(nn.Module):
             x_skip = self.skips[i](x_dst)
             for j in range(self.num_etypes):
                 subg = mfg.edge_subgraph(
-                    mfg.edata["etype"] == j, relabel_nodes=False
+                    mfg.edata[dgl.ETYPE] == j, relabel_nodes=False
                 )
                 x_skip += self.convs[i][j](subg, (x, x_dst)).view(
                     -1, self.hidden_channels
