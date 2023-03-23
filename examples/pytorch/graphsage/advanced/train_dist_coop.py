@@ -89,7 +89,6 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     th.set_num_threads(os.cpu_count() // local_size)
     th.cuda.set_device(local_rank)
     device = th.cuda.current_device()
-    cpu_device = th.device('cpu')
     global_rank = group_rank * local_size + local_rank
     thd.init_process_group('nccl', 'env://', world_size=world_size, rank=global_rank)
 
@@ -126,28 +125,6 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     model = nn.parallel.DistributedDataParallel(model.to(device), device_ids=[local_rank], output_device=local_rank)
     opt = th.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
     sched = th.optim.lr_scheduler.StepLR(opt, step_size=25, gamma=0.25)
-
-    if not args.train:
-        for epoch in range(args.num_epochs):
-            for k in [3, 6, 9, 12, 15]:
-                fanouts = [k for _ in range(num_layers)]
-                samplers = [DistSampler(g, dgl.dataloading.NeighborSampler, fanouts), DistSampler(g, dgl.dataloading.LaborSampler, fanouts, importance_sampling=args.importance_sampling)]
-                if args.edge_pred:
-                    samplers = [dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids,
-                    negative_sampler=dgl.dataloading.negative_sampler.Uniform(1)) for sampler in samplers]
-                sampler_names = ['NS', 'LABOR-{}'.format(args.importance_sampling)]
-                for batch_size in [2 ** i for i in range(10, 17)]:
-                    num_items = train_idx.shape[0] if not args.edge_pred else g.g.num_edges()
-                    perm = th.randperm(num_items, device=device)
-                    for i in range(0, num_items, batch_size):
-                        seeds = train_idx[perm[i: i + batch_size]] if not args.edge_pred else perm[i: i + batch_size]
-                        for sampler, name in zip(samplers, sampler_names):
-                            if not args.edge_pred:
-                                input_nodes, output_nodes, blocks = sampler.sample(g.g, seeds)
-                                print("{}-{}-{}-{}".format(name, batch_size, k, global_rank), [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks])
-                            else:
-                                input_nodes, pair_graph, neg_graph, blocks = sampler.sample(g.g, seeds)
-                                print("{}-{}-{}-{}".format(name, batch_size, k, global_rank), [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks])
 
     logdir = os.path.join(args.logdir, '{}_{}_{}_{}_{}'.format(args.dataset, args.sampler, args.importance_sampling, args.layer_dependency, args.batch_dependency))
     dirs = glob.glob('{}/*'.format(logdir))
@@ -280,7 +257,9 @@ def main(args):
     cast_to_int = max(g.num_nodes(), g.num_edges()) <= 2e9
     if cast_to_int:
         g = g.int()
+    print('before formats')
     g = g.formats(['csc'])
+    print('after formats')
     
     parts = [th.arange(i * g.num_nodes() // world_size, (i + 1) * g.num_nodes() // world_size) for i in range(world_size)]
 
@@ -307,7 +286,6 @@ if __name__ == '__main__':
     argparser.add_argument('--edge-pred', action='store_true')
     argparser.add_argument('--partition', type=str, default='random-balanced')
     argparser.add_argument('--undirected', action='store_true')
-    argparser.add_argument('--train', action='store_true')
     argparser.add_argument('--replication', type=int, default=0)
     argparser.add_argument('--root-dir', type=str, default='/localscratch/ogb')
     argparser.add_argument('--uva-data', action='store_true')
