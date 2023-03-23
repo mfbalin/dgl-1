@@ -271,7 +271,7 @@ def main(args):
             parts = uniform_partition(g, world_size)
         elif args.partition == 'random-balanced':
             th.manual_seed(0)
-            parts = uniform_partition_balanced(g, math.lcm(world_size, 3, 5, 7, 16))
+            parts = uniform_partition_balanced(g, 1680 * world_size // math.gcd(world_size, 1680))
         else:
             parts = uniform_partition(g, world_size, False)
         g = reorder_graph_wrapper(g, parts)
