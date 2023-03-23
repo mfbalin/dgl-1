@@ -160,7 +160,6 @@ class DistGraph(object):
         self.group_start = self.group * self.group_size
         self.group_end = (self.group + 1) * self.group_size
         self.compress = compress
-        self.shared_g = False
 
         assert(self.world_size % self.group_size == 0)
         assert(self.world_size == len(g_parts))
