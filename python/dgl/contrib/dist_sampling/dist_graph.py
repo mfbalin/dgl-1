@@ -167,7 +167,6 @@ class DistGraph(object):
         
         self.device = th.cuda.current_device()
         cpu_device = th.device('cpu')
-        storage_device = self.device if not uva_data else cpu_device
         
         assert(g.device == cpu_device)
 
@@ -184,73 +183,9 @@ class DistGraph(object):
 
         node_ranges = th.cumsum(th.tensor([0] + parts, device=cpu_device), dim=0)
 
-        if not self.shared_g:
-            my_g = in_subgraph(g, th.arange(node_ranges[self.l_rank], node_ranges[self.l_rank + 1], dtype=g.idtype))
-
-            for k, v in list(g.ndata.items()):
-                my_g.ndata.pop(k)
-    
-            for k, v in list(g.edata.items()):
-                if k != EID:
-                    my_g.edata.pop(k)
-
         num_dst_nodes = node_ranges[self.l_rank + 1] - node_ranges[self.l_rank]
 
-        if compress:
-            max_num_dst_nodes = max(parts)
-            self.log_pow_of_two = min(i for i in range(60) if 2 ** i >= max_num_dst_nodes)
-            self.pow_of_two = 2 ** self.log_pow_of_two
-
-            src, dst = my_g.edges()
-
-            src_part = th.searchsorted(node_ranges, src + 1) - 1
-            dst_part = self.l_rank # th.searchsorted(node_ranges, dst + 1) - 1
-
-            new_src = src - node_ranges[src_part] + src_part * self.pow_of_two
-            new_dst = dst - node_ranges[dst_part] + dst_part * self.pow_of_two
-       
-            g_dst_start = dst_part * self.pow_of_two
-            # we make sure that all destination nodes assigned to us are in this list so that we are not missing any nodes
-            unique_src = th.unique(th.cat((new_src, th.arange(g_dst_start, g_dst_start + num_dst_nodes))))
-
-            uni_src = th.searchsorted(unique_src, new_src)
-            uni_dst = th.searchsorted(unique_src, new_dst)
-            # consider using dgl.create_block
-            self.g = graph((uni_src, uni_dst), num_nodes=unique_src.shape[0], device=storage_device)
-            self.g.ndata[NID] = unique_src.to(storage_device)
-            self.g.edata[EID] = my_g.edata[EID].to(storage_device)
-
-            self.node_ranges = th.tensor([0] * (self.group * self.group_size) + list(range(0, self.group_size + 1)) + [self.group_size] * ((self.num_groups - self.group - 1) * self.group_size), device=storage_device) * self.pow_of_two
-
-            g_node_ranges = []
-            cnts = [0] * self.group_size
-            permute = []
-            for i in range(self.num_groups):
-                for j in range(self.group_size):
-                    rank = j * self.num_groups + i
-                    permute.append(rank)
-                    g_node_ranges.append(self.pow_of_two * j + cnts[j])
-                    cnts[j] += g_parts[rank]
-            g_node_ranges.append(self.pow_of_two * self.group_size)
-            inv_permute = sorted(range(len(permute)), key=permute.__getitem__)        
-            self.g_node_ranges = th.tensor(g_node_ranges, device=storage_device)[inv_permute + [-1]]
-            self.permute = th.tensor(permute, device=self.device)
-            self.inv_permute = th.tensor(inv_permute, device=self.device)
-
-            self.pr = self.sorted_global_partition(self.g.ndata[NID], False).to(self.device)
-            assert self.pr[self.rank + 1] - self.pr[self.rank] == num_dst_nodes
-            self.g_pr = self.sorted_global_partition(self.g.ndata[NID], True).to(self.device)
-            
-            self.l_offset = self.g_pr[permute[self.rank]].item()
-
-            g_offset = self.l_rank * self.pow_of_two
-
-            self.node_ranges = self.node_ranges.to(self.device)
-            self.g_node_ranges = self.g_node_ranges.to(self.device)
-
-            self.dstdata = {NID: self.g.ndata[NID][self.g_pr[self.permute[self.rank]].item(): self.g_pr[self.permute[self.rank] + 1].item()]}
-            g_NID = (self.dstdata[NID] - g_offset + node_ranges[self.l_rank]).to(cpu_device)
-        elif self.shared_g:
+        if uva_data:
             self.g = g
             self.g.pin_memory_()
             self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
@@ -280,38 +215,103 @@ class DistGraph(object):
 
             self.dstdata = {k: v[g_NID] for k, v in self.g.ndata.items()}
         else:
-            # self.g = my_g.to(storage_device)
-            src, dst, eid = my_g.edges(form='all')
-            self.g = graph((src, dst), num_nodes=g.num_nodes(), device=storage_device)
-            self.g.edata[EID] = eid.to(storage_device)
+            storage_device = self.device if not uva_data else cpu_device
 
-            self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
+            my_g = in_subgraph(g, th.arange(node_ranges[self.l_rank], node_ranges[self.l_rank + 1], dtype=g.idtype))
 
-            g_node_ranges = []
-            cnts = [0] * self.group_size
-            permute = []
-            for i in range(self.num_groups):
-                for j in range(self.group_size):
-                    rank = j * self.num_groups + i
-                    permute.append(rank)
-                    g_node_ranges.append(node_ranges[j].item() + cnts[j])
-                    cnts[j] += g_parts[rank]
-            g_node_ranges.append(node_ranges[-1].item())
-            inv_permute = sorted(range(len(permute)), key=permute.__getitem__)        
-            self.g_node_ranges = th.tensor(g_node_ranges, device=self.device)[inv_permute + [-1]]
-            self.permute = th.tensor(permute, device=self.device)
-            self.inv_permute = th.tensor(inv_permute, device=self.device)
+            for k, v in list(g.ndata.items()):
+                my_g.ndata.pop(k)
 
-            self.pr = self.node_ranges
-            assert self.pr[self.rank + 1] - self.pr[self.rank] == num_dst_nodes
-            self.g_pr = self.g_node_ranges
-            
-            self.l_offset = self.g_pr[permute[self.rank]].item()
+            for k, v in list(g.edata.items()):
+                if k != EID:
+                    my_g.edata.pop(k)
 
-            self.dstdata = {}
-            g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
+            if compress:
+                max_num_dst_nodes = max(parts)
+                self.log_pow_of_two = min(i for i in range(60) if 2 ** i >= max_num_dst_nodes)
+                self.pow_of_two = 2 ** self.log_pow_of_two
+
+                src, dst = my_g.edges()
+
+                src_part = th.searchsorted(node_ranges, src + 1) - 1
+                dst_part = self.l_rank # th.searchsorted(node_ranges, dst + 1) - 1
+
+                new_src = src - node_ranges[src_part] + src_part * self.pow_of_two
+                new_dst = dst - node_ranges[dst_part] + dst_part * self.pow_of_two
         
-        if not self.shared_g:
+                g_dst_start = dst_part * self.pow_of_two
+                # we make sure that all destination nodes assigned to us are in this list so that we are not missing any nodes
+                unique_src = th.unique(th.cat((new_src, th.arange(g_dst_start, g_dst_start + num_dst_nodes))))
+
+                uni_src = th.searchsorted(unique_src, new_src)
+                uni_dst = th.searchsorted(unique_src, new_dst)
+                # consider using dgl.create_block
+                self.g = graph((uni_src, uni_dst), num_nodes=unique_src.shape[0], device=storage_device)
+                self.g.ndata[NID] = unique_src.to(storage_device)
+                self.g.edata[EID] = my_g.edata[EID].to(storage_device)
+
+                self.node_ranges = th.tensor([0] * (self.group * self.group_size) + list(range(0, self.group_size + 1)) + [self.group_size] * ((self.num_groups - self.group - 1) * self.group_size), device=storage_device) * self.pow_of_two
+
+                g_node_ranges = []
+                cnts = [0] * self.group_size
+                permute = []
+                for i in range(self.num_groups):
+                    for j in range(self.group_size):
+                        rank = j * self.num_groups + i
+                        permute.append(rank)
+                        g_node_ranges.append(self.pow_of_two * j + cnts[j])
+                        cnts[j] += g_parts[rank]
+                g_node_ranges.append(self.pow_of_two * self.group_size)
+                inv_permute = sorted(range(len(permute)), key=permute.__getitem__)        
+                self.g_node_ranges = th.tensor(g_node_ranges, device=storage_device)[inv_permute + [-1]]
+                self.permute = th.tensor(permute, device=self.device)
+                self.inv_permute = th.tensor(inv_permute, device=self.device)
+
+                self.pr = self.sorted_global_partition(self.g.ndata[NID], False).to(self.device)
+                assert self.pr[self.rank + 1] - self.pr[self.rank] == num_dst_nodes
+                self.g_pr = self.sorted_global_partition(self.g.ndata[NID], True).to(self.device)
+    
+                self.l_offset = self.g_pr[permute[self.rank]].item()
+
+                g_offset = self.l_rank * self.pow_of_two
+
+                self.node_ranges = self.node_ranges.to(self.device)
+                self.g_node_ranges = self.g_node_ranges.to(self.device)
+
+                self.dstdata = {NID: self.g.ndata[NID][self.g_pr[self.permute[self.rank]].item(): self.g_pr[self.permute[self.rank] + 1].item()]}
+                g_NID = (self.dstdata[NID] - g_offset + node_ranges[self.l_rank]).to(cpu_device)
+            else:
+                # self.g = my_g.to(storage_device)
+                src, dst, eid = my_g.edges(form='all')
+                self.g = graph((src, dst), num_nodes=g.num_nodes(), device=storage_device)
+                self.g.edata[EID] = eid.to(storage_device)
+
+                self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
+
+                g_node_ranges = []
+                cnts = [0] * self.group_size
+                permute = []
+                for i in range(self.num_groups):
+                    for j in range(self.group_size):
+                        rank = j * self.num_groups + i
+                        permute.append(rank)
+                        g_node_ranges.append(node_ranges[j].item() + cnts[j])
+                        cnts[j] += g_parts[rank]
+                g_node_ranges.append(node_ranges[-1].item())
+                inv_permute = sorted(range(len(permute)), key=permute.__getitem__)        
+                self.g_node_ranges = th.tensor(g_node_ranges, device=self.device)[inv_permute + [-1]]
+                self.permute = th.tensor(permute, device=self.device)
+                self.inv_permute = th.tensor(inv_permute, device=self.device)
+
+                self.pr = self.node_ranges
+                assert self.pr[self.rank + 1] - self.pr[self.rank] == num_dst_nodes
+                self.g_pr = self.g_node_ranges
+                
+                self.l_offset = self.g_pr[permute[self.rank]].item()
+
+                self.dstdata = {}
+                g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
+
             del my_g
 
             g_EID = self.g.edata[EID].to(cpu_device, th.int64)
@@ -335,9 +335,6 @@ class DistGraph(object):
                 if k != EID:
                     self.g.edata[k] = v[g_EID].to(storage_device)
                 g.edata.pop(k)
-
-            if uva_data:
-                self.g.pin_memory_()
 
         self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
         thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
