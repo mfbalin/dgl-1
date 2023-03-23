@@ -160,6 +160,7 @@ class DistGraph(object):
         self.group_start = self.group * self.group_size
         self.group_end = (self.group + 1) * self.group_size
         self.compress = compress
+        self.shared_g = False
 
         assert(self.world_size % self.group_size == 0)
         assert(self.world_size == len(g_parts))
@@ -183,14 +184,15 @@ class DistGraph(object):
 
         node_ranges = th.cumsum(th.tensor([0] + parts, device=cpu_device), dim=0)
 
-        my_g = in_subgraph(g, th.arange(node_ranges[self.l_rank], node_ranges[self.l_rank + 1], dtype=g.idtype))
+        if not self.shared_g:
+            my_g = in_subgraph(g, th.arange(node_ranges[self.l_rank], node_ranges[self.l_rank + 1], dtype=g.idtype))
 
-        for k, v in list(g.ndata.items()):
-            my_g.ndata.pop(k)
-        
-        for k, v in list(g.edata.items()):
-            if k != EID:
-                my_g.edata.pop(k)
+            for k, v in list(g.ndata.items()):
+                my_g.ndata.pop(k)
+    
+            for k, v in list(g.edata.items()):
+                if k != EID:
+                    my_g.edata.pop(k)
 
         num_dst_nodes = node_ranges[self.l_rank + 1] - node_ranges[self.l_rank]
 
@@ -248,6 +250,35 @@ class DistGraph(object):
 
             self.dstdata = {NID: self.g.ndata[NID][self.g_pr[self.permute[self.rank]].item(): self.g_pr[self.permute[self.rank] + 1].item()]}
             g_NID = (self.dstdata[NID] - g_offset + node_ranges[self.l_rank]).to(cpu_device)
+        elif self.shared_g:
+            self.g = g
+            self.g.pin_memory_()
+            self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
+
+            g_node_ranges = []
+            cnts = [0] * self.group_size
+            permute = []
+            for i in range(self.num_groups):
+                for j in range(self.group_size):
+                    rank = j * self.num_groups + i
+                    permute.append(rank)
+                    g_node_ranges.append(node_ranges[j].item() + cnts[j])
+                    cnts[j] += g_parts[rank]
+            g_node_ranges.append(node_ranges[-1].item())
+            inv_permute = sorted(range(len(permute)), key=permute.__getitem__)        
+            self.g_node_ranges = th.tensor(g_node_ranges, device=self.device)[inv_permute + [-1]]
+            self.permute = th.tensor(permute, device=self.device)
+            self.inv_permute = th.tensor(inv_permute, device=self.device)
+
+            self.pr = self.node_ranges
+            assert self.pr[self.rank + 1] - self.pr[self.rank] == num_dst_nodes
+            self.g_pr = self.g_node_ranges
+            
+            self.l_offset = self.g_pr[permute[self.rank]].item()
+
+            g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
+
+            self.dstdata = {k: v[g_NID] for k, v in self.g.ndata.items()}
         else:
             # self.g = my_g.to(storage_device)
             src, dst, eid = my_g.edges(form='all')
@@ -280,32 +311,33 @@ class DistGraph(object):
             self.dstdata = {}
             g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
         
-        del my_g
+        if not self.shared_g:
+            del my_g
 
-        g_EID = self.g.edata[EID].to(cpu_device, th.int64)
+            g_EID = self.g.edata[EID].to(cpu_device, th.int64)
 
-        self.g = self.g.formats(['csc'])
-        self.pindata = {}
+            self.g = self.g.formats(['csc'])
+            self.pindata = {}
 
-        for k, v in list(g.ndata.items()):
-            if k != NID:
-                this_uva_data = uva_data or k in uva_ndata
-                this_storage_device = cpu_device if this_uva_data else storage_device
-                self.dstdata[k] = v[g_NID].to(this_storage_device)
-                if this_uva_data:
-                    if compress:
-                        self.pindata[k] = pin_memory_inplace(self.dstdata[k])
-                    else:
-                        self.pindata[k] = pin_memory_inplace(v)
-            g.ndata.pop(k)
-        
-        for k, v in list(g.edata.items()):
-            if k != EID:
-                self.g.edata[k] = v[g_EID].to(storage_device)
-            g.edata.pop(k)
+            for k, v in list(g.ndata.items()):
+                if k != NID:
+                    this_uva_data = uva_data or k in uva_ndata
+                    this_storage_device = cpu_device if this_uva_data else storage_device
+                    self.dstdata[k] = v[g_NID].to(this_storage_device)
+                    if this_uva_data:
+                        if compress:
+                            self.pindata[k] = pin_memory_inplace(self.dstdata[k])
+                        else:
+                            self.pindata[k] = pin_memory_inplace(v)
+                g.ndata.pop(k)
 
-        if uva_data:
-            self.g.pin_memory_()
+            for k, v in list(g.edata.items()):
+                if k != EID:
+                    self.g.edata[k] = v[g_EID].to(storage_device)
+                g.edata.pop(k)
+
+            if uva_data:
+                self.g.pin_memory_()
 
         self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
         thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
