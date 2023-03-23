@@ -216,15 +216,10 @@ class DistGraph(object):
             self.dstdata = {k: v[g_NID] for k, v in self.g.ndata.items()}
         else:
             storage_device = self.device if not uva_data else cpu_device
+            g_ndata = {k: g.ndata.pop(k) for k in list(g.ndata)}
+            g_edata = {k: g.edata.pop(k) for k in list(g.edata)}
 
             my_g = in_subgraph(g, th.arange(node_ranges[self.l_rank], node_ranges[self.l_rank + 1], dtype=g.idtype))
-
-            for k, v in list(g.ndata.items()):
-                my_g.ndata.pop(k)
-
-            for k, v in list(g.edata.items()):
-                if k != EID:
-                    my_g.edata.pop(k)
 
             if compress:
                 max_num_dst_nodes = max(parts)
@@ -281,10 +276,7 @@ class DistGraph(object):
                 self.dstdata = {NID: self.g.ndata[NID][self.g_pr[self.permute[self.rank]].item(): self.g_pr[self.permute[self.rank] + 1].item()]}
                 g_NID = (self.dstdata[NID] - g_offset + node_ranges[self.l_rank]).to(cpu_device)
             else:
-                # self.g = my_g.to(storage_device)
-                src, dst, eid = my_g.edges(form='all')
-                self.g = graph((src, dst), num_nodes=g.num_nodes(), device=storage_device)
-                self.g.edata[EID] = eid.to(storage_device)
+                self.g = my_g.to(storage_device)
 
                 self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
 
@@ -319,7 +311,7 @@ class DistGraph(object):
             self.g = self.g.formats(['csc'])
             self.pindata = {}
 
-            for k, v in list(g.ndata.items()):
+            for k, v in list(g_ndata.items()):
                 if k != NID:
                     this_uva_data = uva_data or k in uva_ndata
                     this_storage_device = cpu_device if this_uva_data else storage_device
@@ -329,12 +321,12 @@ class DistGraph(object):
                             self.pindata[k] = pin_memory_inplace(self.dstdata[k])
                         else:
                             self.pindata[k] = pin_memory_inplace(v)
-                g.ndata.pop(k)
+                g_ndata.pop(k)
 
-            for k, v in list(g.edata.items()):
+            for k, v in list(g_edata.items()):
                 if k != EID:
                     self.g.edata[k] = v[g_EID].to(storage_device)
-                g.edata.pop(k)
+                g_edata.pop(k)
 
         self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
         thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
