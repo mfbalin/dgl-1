@@ -258,7 +258,7 @@ def main(args):
     if cast_to_int:
         g = g.int()
     g.create_formats_()
-    
+
     parts = [th.arange(i * g.num_nodes() // world_size, (i + 1) * g.num_nodes() // world_size) for i in range(world_size)]
 
     args.dataset += undirected_suffix
