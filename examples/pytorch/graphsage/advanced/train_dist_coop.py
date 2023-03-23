@@ -250,7 +250,6 @@ def main(args):
         gs, ls = dgl.load_graphs(os.path.join(args.root_dir, fn_list[0]))
         g = gs[0]
         n_classes = ls['n_classes'][0].item()
-        parts = [th.arange(i * g.num_nodes() // world_size, (i + 1) * g.num_nodes() // world_size) for i in range(world_size)]
         if 'etype' in g.edata:
             g.edata[dgl.ETYPE] = g.edata.pop('etype')
     else:
@@ -282,6 +281,8 @@ def main(args):
     if cast_to_int:
         g = g.int()
     g = g.formats(['csc'])
+    
+    parts = [th.arange(i * g.num_nodes() // world_size, (i + 1) * g.num_nodes() // world_size) for i in range(world_size)]
 
     args.dataset += undirected_suffix
 
