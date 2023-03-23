@@ -32,6 +32,7 @@ import argparse
 import sys
 import os
 import glob
+import math
 from contextlib import nullcontext
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m, to_bidirected_with_reverse_mapping
@@ -270,7 +271,7 @@ def main(args):
             parts = uniform_partition(g, world_size)
         elif args.partition == 'random-balanced':
             th.manual_seed(0)
-            parts = uniform_partition_balanced(g, world_size)
+            parts = uniform_partition_balanced(g, math.lcm(world_size, 3, 5, 7, 16))
         else:
             parts = uniform_partition(g, world_size, False)
         g = reorder_graph_wrapper(g, parts)
@@ -296,7 +297,7 @@ if __name__ == '__main__':
     argparser.add_argument('--fan-out', type=str, default='10,10,10')
     argparser.add_argument('--batch-size', type=int, default=1000)
     argparser.add_argument('--lr', type=float, default=0.001)
-    argparser.add_argument('--model', type=str, default='rgat')
+    argparser.add_argument('--model', type=str, default='rgcn')
     argparser.add_argument('--sampler', type=str, default='labor')
     argparser.add_argument('--importance-sampling', type=int, default=0)
     argparser.add_argument('--layer-dependency', action='store_true')
