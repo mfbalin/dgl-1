@@ -186,7 +186,7 @@ class DistGraph(object):
 
         if uva_data:
             self.g = g
-            self.g.create_formats_()
+            # self.g.create_formats_()
             self.g.pin_memory_()
             self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
 

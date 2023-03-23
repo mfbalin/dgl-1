@@ -257,7 +257,7 @@ def main(args):
     cast_to_int = max(g.num_nodes(), g.num_edges()) <= 2e9
     if cast_to_int:
         g = g.int()
-    g.create_formats_()
+    g = g.formats(['csc'])
 
     parts = [th.arange(i * g.num_nodes() // world_size, (i + 1) * g.num_nodes() // world_size) for i in range(world_size)]
 
