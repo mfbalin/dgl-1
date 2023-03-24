@@ -40,7 +40,6 @@ from ... import backend as F
 from ... import ndarray as nd
 
 from ...dataloading.base import Sampler
-from ...heterograph import DGLGraph
 
 from ..gpu_cache import GPUCache
 
@@ -48,28 +47,28 @@ def reorder_graph_wrapper(g, parts):
     return g.reorder_graph(node_permute_algo='custom', # edge_permute_algo='dst', 
     store_ids=False, permute_config={'nodes_perm': th.cat(parts)})
 
-def uniform_partition(g, n_procs, random=True):
-    N = g.num_nodes()
-    idx = th.randperm(N, device=g.device) if random else th.arange(N, device=g.device)
-    return [idx[i * N // n_procs: (i + 1) * N // n_procs] for i in range(n_procs)]
-
 def _split_idx(idx, n, random):
     N = idx.shape[0]
     perm = th.randperm(N, device=idx.device) if random else th.arange(N, device=idx.device)
     return [idx[perm[i * N // n: (i + 1) * N // n]] for i in range(n)]
 
-def uniform_partition_balanced(g, n_procs, random=True):
+def uniform_partition(g, n_procs, random=True):
     N = g.num_nodes()
-    train_idx, = th.nonzero(g.ndata['train_mask'], as_tuple=True)
+    train_idx, = th.nonzero(g.ndata['train_mask'], as_tuple=True) if 'train_mask' in g.ndata else th.zeros([0])
     train_part = _split_idx(train_idx, n_procs, random)
 
-    val_idx, = th.nonzero(g.ndata['val_mask'], as_tuple=True)
+    val_idx, = th.nonzero(g.ndata['val_mask'], as_tuple=True) if 'val_mask' in g.ndata else th.zeros([0])
     val_part = _split_idx(val_idx, n_procs, random)
 
-    test_idx, = th.nonzero(g.ndata['test_mask'], as_tuple=True)
+    test_idx, = th.nonzero(g.ndata['test_mask'], as_tuple=True) if 'test_mask' in g.ndata else th.zeros([0])
     test_part = _split_idx(test_idx, n_procs, random)
 
-    other_idx, = th.nonzero(~(g.ndata['train_mask'] | g.ndata['val_mask'] | g.ndata['test_mask']), as_tuple=True)
+    other_mask = th.zeros([N], device=g.device, dtype=th.bool)
+    other_mask[train_idx] = True
+    other_mask[val_idx] = True
+    other_mask[test_idx] = True
+
+    other_idx, = th.nonzero(~other_mask, as_tuple=True)
     other_part = _split_idx(other_idx, n_procs, random)
 
     out = [[] for i in range(n_procs)]
@@ -79,7 +78,11 @@ def uniform_partition_balanced(g, n_procs, random=True):
     return [th.cat(parts, dim=0) for parts in out]
 
 def metis_partition(g, n_procs):
-    parts = metis_partition_assignment(g, n_procs)
+    n_types = th.zeros([g.num_nodes()], dtype=th.int64)
+    for i, mask in enumerate(['train_mask', 'val_mask']):
+        if mask in g.ndata:
+            n_types[g.ndata[mask]] = i + 1
+    parts = metis_partition_assignment(g, n_procs, balance_ntypes=n_types)
     idx = th.argsort(parts)
     partition = th.searchsorted(parts[idx], th.arange(0, n_procs + 1))
     return [idx[partition[i]: partition[i + 1]] for i in range(n_procs)]

@@ -26,7 +26,7 @@ import torch.distributed.optim
 import torchmetrics.functional as MF
 from torch.utils.tensorboard import SummaryWriter
 import dgl
-from dgl.contrib.dist_sampling import DistGraph, DistSampler, metis_partition, uniform_partition, uniform_partition_balanced, reorder_graph_wrapper
+from dgl.contrib.dist_sampling import DistGraph, DistSampler, metis_partition, uniform_partition, reorder_graph_wrapper
 from dgl.transforms.functional import remove_self_loop
 import argparse
 import sys
@@ -222,7 +222,7 @@ def main(args):
 
     undirected_suffix = '-undirected' if args.undirected else ''
 
-    fn_list = [fn for fn in os.listdir(args.root_dir) if fn.startswith(args.dataset + undirected_suffix)]
+    fn_list = [fn for fn in os.listdir(args.root_dir) if fn.startswith(args.dataset + undirected_suffix + '_{}'.format(args.partition))]
     if fn_list:
         gs, ls = dgl.load_graphs(os.path.join(args.root_dir, fn_list[0]))
         g = gs[0]
@@ -240,19 +240,14 @@ def main(args):
             g.edata['is_reverse'] = th.zeros(g.num_edges(), dtype=th.bool)
             g.edata['is_reverse'][reverse_eids] = True
 
+        parts = None
         if args.partition == 'metis':
             parts = metis_partition(g, world_size)
         elif args.partition == 'random':
-            th.manual_seed(0)
-            parts = uniform_partition(g, world_size)
-        elif args.partition == 'random-balanced':
-            th.manual_seed(0)
-            parts = uniform_partition_balanced(g, 1680 * world_size // math.gcd(world_size, 1680))
-        else:
-            parts = uniform_partition(g, world_size, False)
-        g = reorder_graph_wrapper(g, parts)
-
-        dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}'.format(args.dataset + undirected_suffix, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
+            parts = uniform_partition(g, 1680 * world_size // math.gcd(world_size, 1680))
+        if parts:
+            g = reorder_graph_wrapper(g, parts)
+            dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}_{}'.format(args.dataset + undirected_suffix, args.partition, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
 
     print('graph loaded')
     cast_to_int = max(g.num_nodes(), g.num_edges()) <= 2e9
@@ -284,7 +279,7 @@ if __name__ == '__main__':
     argparser.add_argument('--batch-dependency', type=int, default=1)
     argparser.add_argument('--dropout', type=float, default=0.5)
     argparser.add_argument('--edge-pred', action='store_true')
-    argparser.add_argument('--partition', type=str, default='random-balanced')
+    argparser.add_argument('--partition', type=str, default='random')
     argparser.add_argument('--undirected', action='store_true')
     argparser.add_argument('--replication', type=int, default=0)
     argparser.add_argument('--root-dir', type=str, default='/localscratch/ogb')
