@@ -66,6 +66,7 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
                     i = slice(j * num_items // num_iters, (j + 1) * num_items // num_iters)
                     with nvtx.annotate("iteration: {}".format(it), color="yellow"):
                         seeds = idx[perm[i]] if not args.edge_pred else perm[i]
+                        thd.barrier(g.comm)
                         events[it % 2][0].record()
                         out = sampler.sample(g.g, seeds.to(device)) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds.to(device))
                         events[it % 2][1].record()
@@ -160,6 +161,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             y = blocks[-1].dstdata.pop('labels')
         model.train(dataloader_idx == 0)
         is_grad_enabled = nullcontext() if model.training else torch.no_grad()
+        thd.barrier(g.comm)
         fw_st.record()
         with nvtx.annotate("forward", color="purple"), is_grad_enabled:
             y_hat = model(blocks, x)
@@ -240,13 +242,15 @@ def main(args):
             g.edata['is_reverse'] = th.zeros(g.num_edges(), dtype=th.bool)
             g.edata['is_reverse'][reverse_eids] = True
 
-        parts = None
         if args.partition == 'metis':
-            parts = metis_partition(g, world_size)
+            parts = metis_partition(g, world_size * args.num_parts_multiplier)
+            g = reorder_graph_wrapper(g, parts)
         elif args.partition == 'random':
             parts = uniform_partition(g, 1680 * world_size // math.gcd(world_size, 1680))
-        if parts:
             g = reorder_graph_wrapper(g, parts)
+        elif args.partition == 'rcmk':
+            g = dgl.reorder_graph(g, node_permute_algo='rcmk', edge_permute_algo='dst', store_ids=False)
+        if args.partition != 'original':
             dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}_{}'.format(args.dataset + undirected_suffix, args.partition, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
 
     print('graph loaded')
@@ -279,7 +283,8 @@ if __name__ == '__main__':
     argparser.add_argument('--batch-dependency', type=int, default=1)
     argparser.add_argument('--dropout', type=float, default=0.5)
     argparser.add_argument('--edge-pred', action='store_true')
-    argparser.add_argument('--partition', type=str, default='random')
+    argparser.add_argument('--partition', type=str, default='random', choices=['original', 'random', 'metis', 'rcmk'])
+    argparser.add_argument('--num-parts-multiplier', type=int, default=512)
     argparser.add_argument('--undirected', action='store_true')
     argparser.add_argument('--replication', type=int, default=0)
     argparser.add_argument('--root-dir', type=str, default='/localscratch/ogb')

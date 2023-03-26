@@ -19,6 +19,7 @@
 #  */
 
 from datetime import timedelta
+from random import shuffle
 
 import nvtx
 
@@ -44,7 +45,7 @@ from ...dataloading.base import Sampler
 from ..gpu_cache import GPUCache
 
 def reorder_graph_wrapper(g, parts):
-    return g.reorder_graph(node_permute_algo='custom', # edge_permute_algo='dst', 
+    return g.reorder_graph(node_permute_algo='custom', edge_permute_algo='dst', 
     store_ids=False, permute_config={'nodes_perm': th.cat(parts)})
 
 def _split_idx(idx, n, random):
@@ -85,7 +86,9 @@ def metis_partition(g, n_procs):
     parts = metis_partition_assignment(g, n_procs, balance_ntypes=n_types)
     idx = th.argsort(parts)
     partition = th.searchsorted(parts[idx], th.arange(0, n_procs + 1))
-    return [idx[partition[i]: partition[i + 1]] for i in range(n_procs)]
+    parts = [idx[partition[i]: partition[i + 1]] for i in range(n_procs)]
+    shuffle(parts)
+    return parts
 
 class DistConvFunction(th.autograd.Function):
     @staticmethod
@@ -445,9 +448,35 @@ class DistGraph(object):
 
         return self.rpull(srctensor, request_counts, requested_sizes, dstnodes, inv_ids)
 
+    def load_balance(self):
+        if self.g.device != th.device('cpu') or self.group_size != self.world_size or not hasattr(self, 'lbt'):
+            return
+        x = self.lbt
+        x = x * th.ones([self.world_size], device=self.device, dtype=th.int64)
+        xs = th.empty([self.world_size], device=self.device, dtype=th.int64)
+        self.all_to_all(list(th.split(xs, 1)), list(th.split(x, 1)))
+        xs = xs.cpu()
+        N = self.g.num_nodes()
+        K = xs.sum().item()
+        ds = th.cumsum(K / xs.shape[0] - xs, dim=0)
+        u = N / K * 0.01
+        dsu = ds * u
+        self.node_ranges[1:] += dsu.to(self.node_ranges.device, self.node_ranges.dtype)
+        self.g_node_ranges[1:] += dsu.to(self.g_node_ranges.device, self.g_node_ranges.dtype)
+        self.pr[1:] += dsu.to(self.pr.device, self.pr.dtype)
+        self.g_pr[1:] += dsu.to(self.g_pr.device, self.g_pr.dtype)
+        self.l_offset = self.g_pr[self.permute[self.rank]].item()
+        g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
+
+        self.dstdata = {k: v[g_NID] for k, v in self.g.ndata.items()}
+
     @nvtx.annotate("sample_blocks", color="purple")
     def sample_blocks(self, seed_nodes, samplers, exclude_eids=None, prefetch_node_feats=[], prefetch_edge_feats=[], prefetch_labels=[]):
+        self.load_balance()
         blocks = []
+        # start_seed_exchange = th.tensor((not (th.all(self.pr[self.rank] <= seed_nodes) and th.all(seed_nodes < self.pr[self.rank + 1]))), device=self.device, dtype=th.int64)
+        # thd.all_reduce(start_seed_exchange, thd.ReduceOp.SUM, self.comm)
+        # if start_seed_exchange.item() > 0:
         if not (th.all(self.pr[self.rank] <= seed_nodes) and th.all(seed_nodes < self.pr[self.rank + 1])):
             seed_nodes, seed_nodes_inv = th.sort(seed_nodes)
             requested_nodes, requested_sizes, request_counts = self.exchange_node_ids(seed_nodes, False)
@@ -513,5 +542,8 @@ class DistGraph(object):
             block.slice_edges = edge_slicer
 
         blocks[-1].cached_variables2 = cached_variables
+
+        # self.lbt = seed_nodes.shape[0]
+        # self.lbt = blocks[0].num_src_nodes()
 
         return seed_nodes, output_nodes, blocks
