@@ -53,12 +53,11 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids,
                     negative_sampler=dgl.dataloading.negative_sampler.Uniform(1))
     it = 0
-    outputs = [None, None]
     num_itemss = [idx.shape[0] if not args.edge_pred else g.g.num_edges() for idx in idxs]
     total_itemss = th.tensor(num_itemss, device=device)
     thd.all_reduce(total_itemss, thd.ReduceOp.SUM, g.comm)
     num_iterss = total_itemss // (g.world_size * args.batch_size)
-    events = [[th.cuda.Event(enable_timing=True) for _ in range(3)] for _ in range(2)]
+    events = [th.cuda.Event(enable_timing=True) for _ in range(3)]
     for epoch in range(args.num_epochs):
         with nvtx.annotate("epoch: {}".format(epoch), color="orange"):
             for dataloader_idx, (idx, num_items, num_iters) in enumerate(zip(idxs, num_itemss, num_iterss)):
@@ -68,24 +67,16 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
                     with nvtx.annotate("iteration: {}".format(it), color="yellow"):
                         seeds = idx[perm[i]] if not args.edge_pred else perm[i]
                         thd.barrier(g.comm)
-                        events[it % 2][0].record()
+                        events[0].record()
                         out = sampler.sample(g.g, seeds.to(device)) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds.to(device))
-                        events[it % 2][1].record()
-                        wait = out[-1][0].slice_features(out[-1][0])
+                        events[1].record()
+                        out[-1][0].slice_features(out[-1][0])()
                         out[-1][-1].slice_labels(out[-1][-1])
                         for block in out[-1]:
                             block.slice_edges(block)
-                        events[it % 2][2].record()
-                        outputs[it % 2] = [dataloader_idx, it, epoch, out, wait]
+                        events[2].record()
+                        yield [dataloader_idx, it, epoch, out, events]
                         it += 1
-                        if it > 1:
-                            out = outputs[it % 2]
-                            out[-1]()
-                            yield out[:-1] + [events[it % 2]]
-    it += 1
-    out = outputs[it % 2]
-    out[-1]()
-    yield out[:-1] + [events[it % 2]]
 
 def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes, args):
     th.set_num_threads(os.cpu_count() // local_size)
