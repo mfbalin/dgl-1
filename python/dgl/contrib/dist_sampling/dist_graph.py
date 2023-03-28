@@ -83,7 +83,7 @@ def metis_partition(g, n_procs):
     for i, mask in enumerate(['train_mask', 'val_mask']):
         if mask in g.ndata:
             n_types[g.ndata[mask]] = i + 1
-    parts = metis_partition_assignment(g, n_procs, balance_ntypes=n_types)
+    parts = metis_partition_assignment(g, n_procs, balance_ntypes=n_types, balance_edges=True)
     idx = th.argsort(parts)
     partition = th.searchsorted(parts[idx], th.arange(0, n_procs + 1))
     parts = [idx[partition[i]: partition[i + 1]] for i in range(n_procs)]

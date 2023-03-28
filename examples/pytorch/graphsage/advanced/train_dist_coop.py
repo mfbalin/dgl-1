@@ -1,4 +1,5 @@
 # /*!
+#  *   Copyright (c) 2023, Muhammed Fatih Balin
 #  *   Copyright (c) 2022, NVIDIA Corporation
 #  *   All rights reserved.
 #  *
@@ -224,7 +225,8 @@ def main(args):
 
     undirected_suffix = '-undirected' if args.undirected else ''
 
-    fn_list = [fn for fn in os.listdir(args.root_dir) if fn.startswith(args.dataset + undirected_suffix + '_{}'.format(args.partition))]
+    par = args.partition + ('-{}'.format(world_size * args.num_parts_multiplier) if args.partition == 'metis' else '')
+    fn_list = [fn for fn in os.listdir(args.root_dir) if fn.startswith(args.dataset + undirected_suffix + '_{}'.format(par))]
     if fn_list:
         gs, ls = dgl.load_graphs(os.path.join(args.root_dir, fn_list[0]))
         g = gs[0]
@@ -251,7 +253,7 @@ def main(args):
         elif args.partition == 'rcmk':
             g = dgl.reorder_graph(g, node_permute_algo='rcmk', edge_permute_algo='dst', store_ids=False)
         if args.partition != 'original':
-            dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}_{}'.format(args.dataset + undirected_suffix, args.partition, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
+            dgl.save_graphs(os.path.join(args.root_dir, '{}_{}_{}_{}'.format(args.dataset + undirected_suffix, par, g.number_of_nodes(), g.number_of_edges())), [g], {'n_classes': th.tensor([n_classes])})
 
     print('graph loaded')
     cast_to_int = max(g.num_nodes(), g.num_edges()) <= 2e9
