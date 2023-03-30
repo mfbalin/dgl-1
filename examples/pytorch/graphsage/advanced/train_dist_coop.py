@@ -216,7 +216,7 @@ def main(args):
 
     undirected_suffix = '-undirected' if args.undirected else ''
 
-    par = args.partition + ('-{}'.format(world_size * args.num_parts_multiplier) if args.partition == 'metis' else '')
+    par = args.partition + ('-{}'.format(world_size * args.num_parts_multiplier) if args.partition in ['metis'] else '')
     fn_list = [fn for fn in os.listdir(args.root_dir) if fn.startswith(args.dataset + undirected_suffix + '_{}_'.format(par))]
     if fn_list:
         gs, ls = dgl.load_graphs(os.path.join(args.root_dir, fn_list[0]))

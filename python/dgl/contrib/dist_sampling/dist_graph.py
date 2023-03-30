@@ -20,6 +20,9 @@
 
 from datetime import timedelta
 from random import shuffle
+import time
+
+import numpy as np
 
 import nvtx
 
@@ -35,7 +38,7 @@ from ...convert import graph
 from ...heterograph_index import create_unitgraph_from_coo
 from ...sparse import lighter_gspmm
 
-from ...partition import metis_partition_assignment
+from ...partition import metis_partition_assignment, make_symmetric_hetero, metis_partition_hetero
 
 from ... import backend as F
 from ... import ndarray as nd
@@ -78,12 +81,44 @@ def uniform_partition(g, n_procs, random=True):
             out[j].append(part)
     return [th.cat(parts, dim=0) for parts in out]
 
-def metis_partition(g, n_procs):
+def metis_partition_old(g, n_procs):
     n_types = th.zeros([g.num_nodes()], dtype=th.int64)
     for i, mask in enumerate(['train_mask', 'val_mask']):
         if mask in g.ndata:
             n_types[g.ndata[mask]] = i + 1
     parts = metis_partition_assignment(g, n_procs, balance_ntypes=n_types, balance_edges=True)
+    idx = th.argsort(parts)
+    partition = th.searchsorted(parts[idx], th.arange(0, n_procs + 1))
+    parts = [idx[partition[i]: partition[i + 1]] for i in range(n_procs)]
+    shuffle(parts)
+    return parts
+
+def metis_partition(g, n_procs):
+    assert (g.idtype == F.int64), "IdType of graph is required to be int64."
+    start = time.time()
+    vwgt = []
+    vwgt.append(F.ones(g.num_nodes(), F.int64, F.cpu()))
+    vwgt.append(F.astype(g.in_degrees(), F.int64))
+    vwgt.append(F.astype(g.ndata['train_mask'], F.int64))
+    vwgt.append(F.astype(g.ndata['val_mask'], F.int64))
+
+    # The vertex weights have to be stored in a vector.
+    vwgt = F.stack(vwgt, 1)
+    shape = (np.prod(F.shape(vwgt),),)
+    vwgt = F.reshape(vwgt, shape)
+    vwgt = F.to_dgl_nd(vwgt)
+    print("Construct multi-constraint weights: {:.3f} seconds".format(
+            time.time() - start))
+
+    start = time.time()
+    sym_g = make_symmetric_hetero(g)
+    print("Convert a graph into a bidirected graph: {:.3f} seconds".format(
+            time.time() - start))
+
+    start = time.time()
+    parts = metis_partition_hetero(sym_g, n_procs, vwgt, "k-way", "cut")
+    print("Metis partitioning: {:.3f} seconds".format(time.time() - start))
+
     idx = th.argsort(parts)
     partition = th.searchsorted(parts[idx], th.arange(0, n_procs + 1))
     parts = [idx[partition[i]: partition[i + 1]] for i in range(n_procs)]

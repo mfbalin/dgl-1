@@ -275,6 +275,18 @@ def get_peak_mem():
             return int(mem) / 1024 / 1024
     return 0.0
 
+def make_symmetric_hetero(g):
+    return DGLGraph(gidx=_CAPI_DGLMakeSymmetric_Hetero(g._graph))
+
+def metis_partition_hetero(sym_g, k, vwgt, mode, objtype):
+    node_part = _CAPI_DGLMetisPartition_Hetero(
+        sym_g._graph, k, vwgt, mode, (objtype == "cut")
+    )
+    if len(node_part) == 0:
+        return None
+    else:
+        node_part = utils.toindex(node_part)
+        return node_part.tousertensor()
 
 def metis_partition_assignment(
     g, k, balance_ntypes=None, balance_edges=False, mode="k-way", objtype="cut"
