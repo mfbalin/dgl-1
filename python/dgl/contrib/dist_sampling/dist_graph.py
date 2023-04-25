@@ -372,6 +372,7 @@ class DistGraph(object):
         self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
         thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
         random_seed = self.random_seed.item()
+        self.permute_host = self.permute.tolist()
         
         print(self.rank, self.g.num_nodes(), self.g.num_edges(), self.pr, self.g_pr, self.l_offset, self.node_ranges, self.g_node_ranges, self.permute, self.inv_permute, random_seed)
         self.last_comm = self.comm
@@ -436,7 +437,7 @@ class DistGraph(object):
         request_counts = request_counts.tolist()
         par_nodes = list(th.split(nodes, request_counts))
         if g_comm:
-            par_nodes = [par_nodes[i] for i in self.permute.tolist()]
+            par_nodes = [par_nodes[i] for i in self.permute_host]
         self.all_to_all(list(th.split(requested_nodes, requested_sizes)), par_nodes)
         requested_nodes = self.global_to_local(requested_nodes, self.rank)
         return requested_nodes, requested_sizes, request_counts
@@ -549,7 +550,7 @@ class DistGraph(object):
                     tensor = cuda_index_tensor(self.dstdata[k], input_nodes).to(self.device, th.float) #
                 out = th.empty((sum(request_counts),) + tensor.shape[1:], dtype=tensor.dtype, device=tensor.device)
                 par_out = list(th.split(out, request_counts))
-                par_out = [par_out[i] for i in self.permute.tolist()]
+                par_out = [par_out[i] for i in self.permute_host]
                 work = self.all_to_all(par_out, list(th.split(tensor, requested_sizes)), True)
                 out.cache_miss = cache_miss
                 block.srcdata[k] = out # .to(th.float)
