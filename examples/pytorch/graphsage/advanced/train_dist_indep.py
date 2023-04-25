@@ -160,6 +160,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
         
         events[0].record()
 
+        thd.barrier()
         for dataloader_idx, (input_nodes, output_nodes, blocks) in chain(zip(repeat(0), train_dataloader), zip(repeat(1), valid_dataloader)):
             events[1].record()
             block_stats = [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks]
@@ -167,11 +168,6 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             events[2].record()
             x = blocks[0].srcdata.pop('features')
             y = blocks[-1].dstdata.pop('labels')
-            writer.add_scalar('dataloader_idx', dataloader_idx, it)
-            for i, mfg in enumerate(blocks):
-                writer.add_scalar('num_nodes/{}'.format(i), mfg.num_src_nodes(), it)
-                writer.add_scalar('num_edges/{}'.format(i), mfg.num_edges(), it)
-            writer.add_scalar('num_nodes/{}'.format(len(blocks)), blocks[-1].num_dst_nodes(), it)
             model.train(dataloader_idx == 0)
             is_grad_enabled = nullcontext() if model.training else torch.no_grad()
             thd.barrier()
@@ -182,9 +178,16 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             if model.training:
                 opt.zero_grad()
                 loss.backward()
+                end.record()
                 opt.step()
+            else:
+                end.record()
             acc = MF.accuracy(y_hat, y)
-            end.record()
+            writer.add_scalar('dataloader_idx', dataloader_idx, it)
+            for i, mfg in enumerate(blocks):
+                writer.add_scalar('num_nodes/{}'.format(i), mfg.num_src_nodes(), it)
+                writer.add_scalar('num_edges/{}'.format(i), mfg.num_edges(), it)
+            writer.add_scalar('num_nodes/{}'.format(len(blocks)), blocks[-1].num_dst_nodes(), it)
             if dataloader_idx >= 1:
                 val_accs[dataloader_idx - 1] += acc.item() * y_hat.shape[0]
                 val_losses[dataloader_idx - 1] += loss.item() * y_hat.shape[0]
@@ -205,6 +208,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             print('rank: {}, it: {}, dataloader_idx: {}, Loss: {:.4f}, Acc: {:.4f}, GPU Mem: {:.0f} MB, time: {:.3f}ms, stats: {}'.format(proc_id, it, dataloader_idx, loss.item(), acc.item(), mem, iter_time, block_stats))
             st, end = end, st
             it += 1
+            thd.barrier()
             events[0].record()
 
         sched.step()

@@ -141,18 +141,6 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
         out = out[3]
         input_nodes = out[0]
         blocks = out[-1]
-        block_stats = [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks]
-        writer.add_scalar('dataloader_idx', dataloader_idx, it)
-        for i, mfg in enumerate(blocks):
-            writer.add_scalar('num_src_nodes/{}'.format(i), mfg.num_src_nodes(), it)
-            writer.add_scalar('num_edges/{}'.format(i), mfg.num_edges(), it)
-            writer.add_scalar('num_nodes/{}'.format(i), mfg.cached_variables[3].shape[0], it)
-            request_counts = mfg.cached_variables[0]
-            g = mfg.cached_variables[-1]
-            writer.add_scalar('num_recv/{}'.format(i), sum(request_counts) - request_counts[g.l_rank], it)
-            requested_sizes = mfg.cached_variables[2]
-            writer.add_scalar('num_send/{}'.format(i), sum(requested_sizes) - requested_sizes[g.l_rank], it)
-        writer.add_scalar('num_nodes/{}'.format(len(blocks)), blocks[-1].num_dst_nodes(), it)
         x = blocks[0].srcdata.pop('features')
         if not args.edge_pred:
             y = blocks[-1].dstdata.pop('labels')
@@ -170,12 +158,26 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             with nvtx.annotate("backward", color="purple"):
                 opt.zero_grad()
                 loss.backward()
+            end.record()
             with nvtx.annotate("optimizer", color="purple"):
                 opt.step()
+        else:
+            end.record()
         if not args.edge_pred:
             with nvtx.annotate("accuracy", color="purple"):
                 acc = MF.accuracy(y_hat, y)
-        end.record()
+        block_stats = [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks]
+        writer.add_scalar('dataloader_idx', dataloader_idx, it)
+        for i, mfg in enumerate(blocks):
+            writer.add_scalar('num_src_nodes/{}'.format(i), mfg.num_src_nodes(), it)
+            writer.add_scalar('num_edges/{}'.format(i), mfg.num_edges(), it)
+            writer.add_scalar('num_nodes/{}'.format(i), mfg.cached_variables[3].shape[0], it)
+            request_counts = mfg.cached_variables[0]
+            g = mfg.cached_variables[-1]
+            writer.add_scalar('num_recv/{}'.format(i), sum(request_counts) - request_counts[g.l_rank], it)
+            requested_sizes = mfg.cached_variables[2]
+            writer.add_scalar('num_send/{}'.format(i), sum(requested_sizes) - requested_sizes[g.l_rank], it)
+        writer.add_scalar('num_nodes/{}'.format(len(blocks)), blocks[-1].num_dst_nodes(), it)
         if dataloader_idx >= 1:
             val_accs[dataloader_idx - 1] += acc.item() * y_hat.shape[0]
             val_losses[dataloader_idx - 1] += loss.item() * y_hat.shape[0]
