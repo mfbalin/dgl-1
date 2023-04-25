@@ -147,6 +147,11 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             writer.add_scalar('num_src_nodes/{}'.format(i), mfg.num_src_nodes(), it)
             writer.add_scalar('num_edges/{}'.format(i), mfg.num_edges(), it)
             writer.add_scalar('num_nodes/{}'.format(i), mfg.cached_variables[3].shape[0], it)
+            request_counts = mfg.cached_variables[0]
+            g = mfg.cached_variables[-1]
+            writer.add_scalar('num_recv/{}'.format(i), sum(request_counts) - request_counts[g.l_rank], it)
+            requested_sizes = mfg.cached_variables[2]
+            writer.add_scalar('num_send/{}'.format(i), sum(requested_sizes) - requested_sizes[g.l_rank], it)
         writer.add_scalar('num_nodes/{}'.format(len(blocks)), blocks[-1].num_dst_nodes(), it)
         x = blocks[0].srcdata.pop('features')
         if not args.edge_pred:

@@ -12,6 +12,7 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as thd
 import torchmetrics.functional as MF
 from torch.utils.tensorboard import SummaryWriter
 import tqdm
@@ -41,7 +42,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     device = devices[proc_id]
     torch.cuda.set_device(device)
     world_size = n_gpus
-    torch.distributed.init_process_group('nccl', 'env://', world_size=world_size, rank=proc_id)
+    thd.init_process_group('nccl', 'env://', world_size=world_size, rank=proc_id)
 
     train_idx = (torch.nonzero(g.ndata['train_mask'], as_tuple=True)[0]).to(device, g.idtype)
     val_idx = (torch.nonzero(g.ndata['val_mask'], as_tuple=True)[0]).to(device, g.idtype)
@@ -124,7 +125,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
     logdir = '{}/version_{}_{}'.format(logdir, proc_id, version)
 
-    torch.distributed.barrier()
+    thd.barrier()
 
     writer = SummaryWriter(logdir)
     
@@ -173,6 +174,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             writer.add_scalar('num_nodes/{}'.format(len(blocks)), blocks[-1].num_dst_nodes(), it)
             model.train(dataloader_idx == 0)
             is_grad_enabled = nullcontext() if model.training else torch.no_grad()
+            thd.barrier()
             fw_st.record()
             with is_grad_enabled:
                 y_hat = model(blocks, x)
@@ -213,7 +215,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
     
     writer.close()
 
-    torch.distributed.barrier()
+    thd.barrier()
 
 def test(args, dataset, g, split_idx, paper_offset):
     print("Loading masks and labels...")
