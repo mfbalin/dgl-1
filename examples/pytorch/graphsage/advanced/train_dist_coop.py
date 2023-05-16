@@ -116,7 +116,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
         model = SAGE([g.dstdata['features'].shape[1]] + [num_hidden for _ in range(num_layers - 1)] + [num_classes], args.dropout, args.replication==1).to(device)
 
     model = nn.parallel.DistributedDataParallel(model.to(device), device_ids=[local_rank], output_device=local_rank)
-    opt = th.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+    opt = th.optim.Adam(model.parameters(), lr=0.001)
     sched = th.optim.lr_scheduler.StepLR(opt, step_size=25, gamma=0.25)
 
     logdir = os.path.join(args.logdir, '{}_{}_{}_{}_{}'.format(args.dataset, args.sampler, args.importance_sampling, args.layer_dependency, args.batch_dependency))
