@@ -160,7 +160,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
         
         events[0].record()
 
-        thd.barrier(async_op=True)
+        thd.barrier()
         for dataloader_idx, (input_nodes, output_nodes, blocks) in chain(zip(repeat(0), train_dataloader), zip(repeat(1), valid_dataloader)):
             events[1].record()
             block_stats = [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks]
@@ -170,7 +170,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             y = blocks[-1].dstdata.pop('labels')
             model.train(dataloader_idx == 0)
             is_grad_enabled = nullcontext() if model.training else torch.no_grad()
-            thd.barrier(async_op=True)
+            thd.barrier()
             fw_st.record()
             with is_grad_enabled:
                 y_hat = model(blocks, x)
@@ -208,7 +208,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             print('rank: {}, it: {}, dataloader_idx: {}, Loss: {:.4f}, Acc: {:.4f}, GPU Mem: {:.0f} MB, time: {:.3f}ms, stats: {}'.format(proc_id, it, dataloader_idx, loss.item(), acc.item(), mem, iter_time, block_stats))
             st, end = end, st
             it += 1
-            thd.barrier(async_op=True)
+            thd.barrier()
             events[0].record()
 
         sched.step()

@@ -66,7 +66,7 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
                     i = slice(j * num_items // num_iters, (j + 1) * num_items // num_iters)
                     with nvtx.annotate("iteration: {}".format(it), color="yellow"):
                         seeds = idx[perm[i]] if not args.edge_pred else perm[i]
-                        thd.barrier(g.comm, async_op=True)
+                        thd.barrier(g.comm)
                         events[0].record()
                         out = sampler.sample(g.g, seeds.to(device)) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds.to(device))
                         events[1].record()
@@ -146,7 +146,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             y = blocks[-1].dstdata.pop('labels')
         model.train(dataloader_idx == 0)
         is_grad_enabled = nullcontext() if model.training else torch.no_grad()
-        thd.barrier(g.comm, async_op=True)
+        thd.barrier(g.comm)
         fw_st.record()
         with nvtx.annotate("forward", color="purple"), is_grad_enabled:
             y_hat = model(blocks, x)
