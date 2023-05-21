@@ -38,6 +38,7 @@ from contextlib import nullcontext
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m, to_bidirected_with_reverse_mapping
 from dist_model import SAGE, RGAT, RGCN, cross_entropy
+from tensor_barrier import barrier
 
 import nvtx
 
@@ -57,7 +58,8 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
     total_itemss = th.tensor(num_itemss, device=device)
     thd.all_reduce(total_itemss, thd.ReduceOp.SUM, g.comm)
     num_iterss = total_itemss // (g.world_size * args.batch_size)
-    events = [th.cuda.Event(enable_timing=True) for _ in range(3)]
+    idxs = [idx.to(device) for idx in idxs]
+    events = [th.cuda.Event(enable_timing=True) for _ in range(4)]
     for epoch in range(args.num_epochs):
         with nvtx.annotate("epoch: {}".format(epoch), color="orange"):
             for dataloader_idx, (idx, num_items, num_iters) in enumerate(zip(idxs, num_itemss, num_iterss)):
@@ -66,15 +68,17 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
                     i = slice(j * num_items // num_iters, (j + 1) * num_items // num_iters)
                     with nvtx.annotate("iteration: {}".format(it), color="yellow"):
                         seeds = idx[perm[i]] if not args.edge_pred else perm[i]
-                        thd.barrier(g.comm)
+                        barrier(seeds, seeds, g.comm)
                         events[0].record()
-                        out = sampler.sample(g.g, seeds.to(device)) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds.to(device))
+                        out = sampler.sample(g.g, seeds) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds)
                         events[1].record()
+                        barrier(out[-1][0].cached_variables[1], out[-1][0].cached_variables[1], g.comm)
+                        events[2].record()
                         out[-1][0].slice_features(out[-1][0])()
                         out[-1][-1].slice_labels(out[-1][-1])
                         for block in out[-1]:
                             block.slice_edges(block)
-                        events[2].record()
+                        events[3].record()
                         yield [dataloader_idx, it, epoch, out, events]
                         it += 1
 
@@ -146,7 +150,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             y = blocks[-1].dstdata.pop('labels')
         model.train(dataloader_idx == 0)
         is_grad_enabled = nullcontext() if model.training else torch.no_grad()
-        thd.barrier(g.comm)
+        barrier(x, x, g.comm)
         fw_st.record()
         with nvtx.annotate("forward", color="purple"), is_grad_enabled:
             y_hat = model(blocks, x)
@@ -192,11 +196,11 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
                     writer.add_scalar('val_loss/dataloader_idx_{}'.format(k), val_losses[k] / cnts[k], it)
                     val_losses[k] = val_accs[k] = cnts[k] = 0
         end.synchronize()
-        events[2].synchronize()
+        events[-1].synchronize()
         iter_time = st.elapsed_time(end)
         writer.add_scalar('time/iter', iter_time, it)
         writer.add_scalar('time/sampling', events[0].elapsed_time(events[1]), it)
-        writer.add_scalar('time/feature_copy', events[1].elapsed_time(events[2]), it)
+        writer.add_scalar('time/feature_copy', events[2].elapsed_time(events[3]), it)
         writer.add_scalar('time/forward_backward', fw_st.elapsed_time(end), it)
         writer.add_scalar('epoch', epoch, it)
         writer.add_scalar('cache_miss', x.cache_miss, it)

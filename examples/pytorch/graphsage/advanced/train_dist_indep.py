@@ -27,6 +27,7 @@ from contextlib import nullcontext
 from dist_model import SAGE, RGAT, RGCN
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m
+from tensor_barrier import barrier
 
 from itertools import chain, repeat
 
@@ -170,7 +171,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             y = blocks[-1].dstdata.pop('labels')
             model.train(dataloader_idx == 0)
             is_grad_enabled = nullcontext() if model.training else torch.no_grad()
-            thd.barrier()
+            barrier(x, x)
             fw_st.record()
             with is_grad_enabled:
                 y_hat = model(blocks, x)

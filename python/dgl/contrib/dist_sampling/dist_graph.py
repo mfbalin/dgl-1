@@ -538,7 +538,7 @@ class DistGraph(object):
             srcdataevents = {}
             cache_miss = 1
             for k in prefetch_node_feats:
-                input_nodes = requested_nodes - self.l_offset
+                input_nodes = block.cached_variables[1] - self.l_offset
                 if k in self.caches:
                     cache = self.caches[k]
                     tensor, missing_index, missing_keys = cache.query(input_nodes)
