@@ -33,12 +33,12 @@ import argparse
 import sys
 import os
 import glob
+from datetime import timedelta
 import math
 from contextlib import nullcontext
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m, to_bidirected_with_reverse_mapping
 from dist_model import SAGE, RGAT, RGCN, cross_entropy
-from tensor_barrier import barrier
 
 import nvtx
 
@@ -68,11 +68,11 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
                     i = slice(j * num_items // num_iters, (j + 1) * num_items // num_iters)
                     with nvtx.annotate("iteration: {}".format(it), color="yellow"):
                         seeds = idx[perm[i]] if not args.edge_pred else perm[i]
-                        barrier(seeds, seeds, g.comm)
+                        thd.barrier()
                         events[0].record()
                         out = sampler.sample(g.g, seeds) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds)
                         events[1].record()
-                        barrier(out[-1][0].cached_variables[1], out[-1][0].cached_variables[1], g.comm)
+                        thd.barrier()
                         events[2].record()
                         out[-1][0].slice_features(out[-1][0])()
                         out[-1][-1].slice_labels(out[-1][-1])
@@ -87,7 +87,10 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     th.cuda.set_device(local_rank)
     device = th.cuda.current_device()
     global_rank = group_rank * local_size + local_rank
-    thd.init_process_group('nccl', 'env://', world_size=world_size, rank=global_rank)
+    pg_options = th._C._distributed_c10d.ProcessGroupNCCL.Options()
+    pg_options.is_high_priority_stream = True
+    pg_options._timeout = timedelta(minutes=1)
+    thd.init_process_group('nccl', 'env://', world_size=world_size, rank=global_rank, pg_options=pg_options)
 
     g = DistGraph(g, parts, args.replication, args.uva_data, args.uva_ndata.split(','), cache_size=args.cache_size, compress=False)
 
@@ -128,7 +131,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
     logdir = '{}/version_{}_{}'.format(logdir, global_rank, version)
 
-    thd.barrier(g.comm)
+    thd.barrier()
     
     writer = SummaryWriter(logdir)
     
@@ -150,7 +153,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             y = blocks[-1].dstdata.pop('labels')
         model.train(dataloader_idx == 0)
         is_grad_enabled = nullcontext() if model.training else torch.no_grad()
-        barrier(x, x, g.comm)
+        thd.barrier()
         fw_st.record()
         with nvtx.annotate("forward", color="purple"), is_grad_enabled:
             y_hat = model(blocks, x)
@@ -212,7 +215,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     
     writer.close()
 
-    thd.barrier(g.comm)
+    thd.barrier()
 
 def main(args):
     # use all available CPUs

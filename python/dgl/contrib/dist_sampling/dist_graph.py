@@ -18,9 +18,9 @@
 #  * \brief distributed cooperative minibatching implementation
 #  */
 
-from datetime import timedelta
 from random import shuffle
 import time
+from datetime import timedelta
 
 import numpy as np
 
@@ -210,12 +210,12 @@ class DistGraph(object):
         
         assert(g.device == cpu_device)
 
-        pg_options = th._C._distributed_c10d.ProcessGroupNCCL.Options()
-        pg_options.is_high_priority_stream = True
-        pg_options._timeout = timedelta(minutes=1)
-        self.comm = thd.new_group(ranks=None, backend='nccl', pg_options=pg_options)
+        self.comm = None
         self.l_comm = self.comm
         if self.group_size < self.world_size:
+            pg_options = th._C._distributed_c10d.ProcessGroupNCCL.Options()
+            pg_options.is_high_priority_stream = True
+            pg_options._timeout = timedelta(minutes=1)
             self.l_comms = [thd.new_group(ranks=range(group * self.group_size, (group + 1) * self.group_size), backend='nccl', pg_options=pg_options) for group in range(self.num_groups)]
             self.l_comm = self.l_comms[self.group]
 

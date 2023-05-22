@@ -23,11 +23,11 @@ from dgl.contrib.gpu_cache import GPUCache
 import glob
 from itertools import chain
 from contextlib import nullcontext
+from datetime import timedelta
 
 from dist_model import SAGE, RGAT, RGCN
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m
-from tensor_barrier import barrier
 
 from itertools import chain, repeat
 
@@ -38,12 +38,14 @@ def cuda_index_tensor(tensor, idx):
     else:
         return tensor[idx.long()]
 
-def train(proc_id, n_gpus, args, g, num_classes, devices):
-    torch.set_num_threads(os.cpu_count() // n_gpus)
+def train(proc_id, world_size, args, g, num_classes, devices):
+    torch.set_num_threads(os.cpu_count() // world_size)
     device = devices[proc_id]
     torch.cuda.set_device(device)
-    world_size = n_gpus
-    thd.init_process_group('nccl', 'env://', world_size=world_size, rank=proc_id)
+    pg_options = torch._C._distributed_c10d.ProcessGroupNCCL.Options()
+    pg_options.is_high_priority_stream = True
+    pg_options._timeout = timedelta(minutes=1)
+    thd.init_process_group('nccl', 'env://', world_size=world_size, rank=proc_id, pg_options=pg_options)
 
     train_idx = (torch.nonzero(g.ndata['train_mask'], as_tuple=True)[0]).to(device, g.idtype)
     val_idx = (torch.nonzero(g.ndata['val_mask'], as_tuple=True)[0]).to(device, g.idtype)
@@ -171,7 +173,7 @@ def train(proc_id, n_gpus, args, g, num_classes, devices):
             y = blocks[-1].dstdata.pop('labels')
             model.train(dataloader_idx == 0)
             is_grad_enabled = nullcontext() if model.training else torch.no_grad()
-            barrier(x, x)
+            thd.barrier()
             fw_st.record()
             with is_grad_enabled:
                 y_hat = model(blocks, x)
