@@ -28,6 +28,7 @@ from datetime import timedelta
 from dist_model import SAGE, RGAT, RGCN
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m
+from buffered_writer import BufferedWriter
 
 from itertools import chain, repeat
 
@@ -130,7 +131,7 @@ def train(proc_id, world_size, args, g, num_classes, devices):
 
     thd.barrier()
 
-    writer = SummaryWriter(logdir)
+    writer = BufferedWriter(logdir)
     
     st, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     fw_st = torch.cuda.Event(enable_timing=True)

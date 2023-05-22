@@ -39,6 +39,7 @@ from contextlib import nullcontext
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m, to_bidirected_with_reverse_mapping
 from dist_model import SAGE, RGAT, RGCN, cross_entropy
+from buffered_writer import BufferedWriter
 
 import nvtx
 
@@ -133,7 +134,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
 
     thd.barrier()
     
-    writer = SummaryWriter(logdir)
+    writer = BufferedWriter(logdir)
     
     st, end = th.cuda.Event(enable_timing=True), th.cuda.Event(enable_timing=True)
     fw_st = th.cuda.Event(enable_timing=True)
