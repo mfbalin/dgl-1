@@ -16,7 +16,7 @@ for replication in 0; do
 model=rgcn
 multiplier=512
 
-for cache_size in 0 250000; do
+for cache_size in 0 500000; do
 for sampler in labor neighbor; do
 for kappa in 1 256; do
 
