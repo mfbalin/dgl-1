@@ -8,6 +8,11 @@ import dgl.nn as dglnn
 
 from dgl.contrib.dist_sampling import DistConv, DistConvFunction
 
+def barrier():
+    th.cuda.synchronize()
+    th.distributed.barrier()
+    th.cuda.synchronize()
+
 class SAGE(nn.Module):
     def __init__(self, num_feats, dropout, replicated=False):
         super().__init__()

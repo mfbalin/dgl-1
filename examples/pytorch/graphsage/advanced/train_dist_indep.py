@@ -25,7 +25,7 @@ from itertools import chain
 from contextlib import nullcontext
 from datetime import timedelta
 
-from dist_model import SAGE, RGAT, RGCN
+from dist_model import SAGE, RGAT, RGCN, barrier
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m
 from buffered_writer import BufferedWriter
@@ -129,7 +129,7 @@ def train(proc_id, world_size, args, g, num_classes, devices):
     version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
     logdir = '{}/version_{}_{}'.format(logdir, proc_id, version)
 
-    thd.barrier()
+    barrier()
 
     writer = BufferedWriter(logdir)
     
@@ -139,7 +139,7 @@ def train(proc_id, world_size, args, g, num_classes, devices):
     val_accs = [0, 0]
     val_losses = [0, 0]
     cnts = [0, 0]
-    events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
+    events = [torch.cuda.Event(enable_timing=True) for _ in range(4)]
 
     for epoch in range(args.num_epochs):
         def process_blocks(blocks):
@@ -164,17 +164,21 @@ def train(proc_id, world_size, args, g, num_classes, devices):
         
         events[0].record()
 
-        thd.barrier()
+        if not args.no_timing:
+            barrier()
         for dataloader_idx, (input_nodes, output_nodes, blocks) in chain(zip(repeat(0), train_dataloader), zip(repeat(1), valid_dataloader)):
             events[1].record()
-            block_stats = [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks]
-            blocks = process_blocks(blocks)
+            if not args.no_timing:
+                barrier()
             events[2].record()
+            blocks = process_blocks(blocks)
+            events[3].record()
             x = blocks[0].srcdata.pop('features')
             y = blocks[-1].dstdata.pop('labels')
             model.train(dataloader_idx == 0)
             is_grad_enabled = nullcontext() if model.training else torch.no_grad()
-            thd.barrier()
+            if not args.no_timing:
+                barrier()
             fw_st.record()
             with is_grad_enabled:
                 y_hat = model(blocks, x)
@@ -187,6 +191,7 @@ def train(proc_id, world_size, args, g, num_classes, devices):
             else:
                 end.record()
             acc = MF.accuracy(y_hat, y)
+            block_stats = [(block.num_src_nodes(), block.num_dst_nodes(), block.num_edges()) for block in blocks]
             writer.add_scalar('dataloader_idx', dataloader_idx, it)
             for i, mfg in enumerate(blocks):
                 writer.add_scalar('num_nodes/{}'.format(i), mfg.num_src_nodes(), it)
@@ -202,7 +207,7 @@ def train(proc_id, world_size, args, g, num_classes, devices):
             iter_time = st.elapsed_time(end)
             writer.add_scalar('time/iter', iter_time, it)
             writer.add_scalar('time/sampling', events[0].elapsed_time(events[1]), it)
-            writer.add_scalar('time/feature_copy', events[1].elapsed_time(events[2]), it)
+            writer.add_scalar('time/feature_copy', events[2].elapsed_time(events[3]), it)
             writer.add_scalar('time/forward_backward', fw_st.elapsed_time(end), it)
             writer.add_scalar('epoch', epoch, it)
             writer.add_scalar('cache_miss', x.cache_miss, it)
@@ -212,7 +217,8 @@ def train(proc_id, world_size, args, g, num_classes, devices):
             print('rank: {}, it: {}, dataloader_idx: {}, Loss: {:.4f}, Acc: {:.4f}, GPU Mem: {:.0f} MB, time: {:.3f}ms, stats: {}'.format(proc_id, it, dataloader_idx, loss.item(), acc.item(), mem, iter_time, block_stats))
             st, end = end, st
             it += 1
-            thd.barrier()
+            if not args.no_timing:
+                barrier()
             events[0].record()
 
         sched.step()
@@ -223,7 +229,7 @@ def train(proc_id, world_size, args, g, num_classes, devices):
     
     writer.close()
 
-    thd.barrier()
+    barrier()
 
 def test(args, dataset, g, split_idx, paper_offset):
     print("Loading masks and labels...")
@@ -326,6 +332,7 @@ if __name__ == "__main__":
     argparser.add_argument('--layer-dependency', action='store_true')
     argparser.add_argument('--batch-dependency', type=int, default=1)
     argparser.add_argument('--fan-out', type=str, default='10,10,10')
+    argparser.add_argument('--no-timing', action='store_true')
     args = argparser.parse_args()
 
     devices = list(range(torch.cuda.device_count()))

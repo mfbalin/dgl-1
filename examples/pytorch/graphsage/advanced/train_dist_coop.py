@@ -38,7 +38,7 @@ import math
 from contextlib import nullcontext
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from load_graph import load_reddit, load_ogb, load_mag240m, to_bidirected_with_reverse_mapping
-from dist_model import SAGE, RGAT, RGCN, cross_entropy
+from dist_model import SAGE, RGAT, RGCN, cross_entropy, barrier
 from buffered_writer import BufferedWriter
 
 import nvtx
@@ -69,11 +69,13 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
                     i = slice(j * num_items // num_iters, (j + 1) * num_items // num_iters)
                     with nvtx.annotate("iteration: {}".format(it), color="yellow"):
                         seeds = idx[perm[i]] if not args.edge_pred else perm[i]
-                        thd.barrier()
+                        if not args.no_timing:
+                            barrier()
                         events[0].record()
                         out = sampler.sample(g.g, seeds) if dataloader_idx < 2 else unbiased_sampler.sample(g.g, seeds)
                         events[1].record()
-                        thd.barrier()
+                        if not args.no_timing:
+                            barrier()
                         events[2].record()
                         out[-1][0].slice_features(out[-1][0])()
                         out[-1][-1].slice_labels(out[-1][-1])
@@ -132,7 +134,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     version = (1 + max([int(os.path.split(x)[-1].split('_')[-1]) for x in dirs])) if len(dirs) > 0 else 0
     logdir = '{}/version_{}_{}'.format(logdir, global_rank, version)
 
-    thd.barrier()
+    barrier()
     
     writer = BufferedWriter(logdir)
     
@@ -154,7 +156,8 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
             y = blocks[-1].dstdata.pop('labels')
         model.train(dataloader_idx == 0)
         is_grad_enabled = nullcontext() if model.training else torch.no_grad()
-        thd.barrier()
+        if not args.no_timing:
+            barrier()
         fw_st.record()
         with nvtx.annotate("forward", color="purple"), is_grad_enabled:
             y_hat = model(blocks, x)
@@ -216,7 +219,7 @@ def train(local_rank, local_size, group_rank, world_size, g, parts, num_classes,
     
     writer.close()
 
-    thd.barrier()
+    barrier()
 
 def main(args):
     # use all available CPUs
@@ -300,5 +303,6 @@ if __name__ == '__main__':
     argparser.add_argument('--uva-ndata', type=str, default='')
     argparser.add_argument('--cache-size', type=int, default=0)
     argparser.add_argument('--logdir', type=str, default='tb_logs')
+    argparser.add_argument('--no-timing', action='store_true')
     args = argparser.parse_args()
     main(args)
