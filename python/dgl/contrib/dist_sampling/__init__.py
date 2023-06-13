@@ -1,1 +1,1 @@
-from .dist_graph import DistConv, DistConvFunction, DistGraph, DistSampler, uniform_partition, metis_partition, reorder_graph_wrapper
+from .dist_graph import DistConv, DistConvFunction, DistGraph, DistSampler, uniform_partition, metis_partition, reorder_graph_wrapper, cuda_index_tensor

@@ -32,12 +32,7 @@ from buffered_writer import BufferedWriter
 
 from itertools import chain, repeat
 
-def cuda_index_tensor(tensor, idx):
-    assert(idx.device != torch.device('cpu'))
-    if tensor.is_pinned():
-        return dgl.utils.gather_pinned_tensor_rows(tensor, idx)
-    else:
-        return tensor[idx.long()]
+from dgl.contrib.dist_sampling import cuda_index_tensor
 
 def train(proc_id, world_size, args, g, num_classes, devices):
     torch.set_num_threads(os.cpu_count() // world_size)

@@ -176,7 +176,9 @@ class DistSampler(Sampler):
 def cuda_index_tensor(tensor, idx):
     assert(idx.device != th.device('cpu'))
     if tensor.is_pinned():
-        return gather_pinned_tensor_rows(tensor, idx)
+        bits = th.finfo(tensor.dtype).bits if tensor.is_floating_point() else th.iinfo(tensor.dtype).bits
+        vtensor = tensor.view(th.int32) if tensor.dim() >= 2 and bits * tensor.shape[-1] % 32 == 0 else tensor
+        return gather_pinned_tensor_rows(vtensor, idx).view(tensor.dtype)
     else:
         return tensor[idx.long()]
 
