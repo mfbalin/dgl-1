@@ -25,16 +25,28 @@ def to_bidirected_with_reverse_mapping(g):
     assert th.equal(src2, dst1)
     return g_simple, reverse_mapping
 
-
-def load_reddit(self_loop=True):
-    from dgl.data import RedditDataset
-
-    # load reddit data
-    data = RedditDataset(self_loop=self_loop)
+def load_data(data):
     g = data[0]
-    g.ndata["features"] = g.ndata.pop("feat")
-    g.ndata["labels"] = g.ndata.pop("label")
+    g.ndata['features'] = g.ndata.pop('feat')
+    g.ndata['labels'] = g.ndata.pop('label')
     return g, data.num_classes
+
+def load_dgl(name):
+    from dgl.data import CoraGraphDataset, CiteseerGraphDataset, PubmedGraphDataset, RedditDataset, YelpDataset, FlickrDataset
+
+    d = {
+        'cora': CoraGraphDataset,
+        'citeseer': CiteseerGraphDataset,
+        'pubmed': PubmedGraphDataset,
+        'reddit': RedditDataset,
+        'yelp': YelpDataset,
+        'flickr': FlickrDataset
+    }
+
+    return load_data(d[name]())
+
+def load_reddit():
+    return load_dgl('reddit')
 
 def load_mag240m(root="dataset"):
     from ogb.lsc import MAG240MDataset
