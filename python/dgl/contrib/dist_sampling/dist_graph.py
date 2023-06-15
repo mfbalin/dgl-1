@@ -21,6 +21,7 @@
 from random import shuffle
 import time
 from datetime import timedelta
+from itertools import chain, repeat
 
 import numpy as np
 
@@ -227,8 +228,12 @@ class DistGraph(object):
 
         num_dst_nodes = node_ranges[self.l_rank + 1] - node_ranges[self.l_rank]
 
+        self.g_ndata = {k: g.ndata.pop(k) for k in list(g.ndata)}
+        self.edata = {k: g.edata.pop(k) for k in list(g.edata)}
+
         if uva_data:
             self.g = g
+            self.pindata = {(data_str, k): pin_memory_inplace(v) for data_str, (k, v) in chain(zip(repeat('ndata'), self.g_ndata.items()), zip(repeat('edata'), self.edata.items()))}
             # self.g.create_formats_()
             self.g.pin_memory_()
             self.node_ranges = th.tensor([0] * (self.group * self.group_size) + node_ranges.tolist() + [node_ranges[-1].item()] * ((self.num_groups - self.group - 1) * self.group_size), device=self.device)
@@ -256,11 +261,9 @@ class DistGraph(object):
 
             g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
 
-            self.dstdata = {k: v[g_NID] for k, v in self.g.ndata.items()}
+            self.dstdata = {k: v[g_NID] for k, v in self.g_ndata.items()}
         else:
             storage_device = self.device if not uva_data else cpu_device
-            g_ndata = {k: g.ndata.pop(k) for k in list(g.ndata)}
-            g_edata = {k: g.edata.pop(k) for k in list(g.edata)}
 
             my_g = in_subgraph(g, th.arange(node_ranges[self.l_rank], node_ranges[self.l_rank + 1], dtype=g.idtype))
 
@@ -354,22 +357,21 @@ class DistGraph(object):
             self.g = self.g.formats(['csc'])
             self.pindata = {}
 
-            for k, v in list(g_ndata.items()):
+            for k, v in self.g_ndata.items():
                 if k != NID:
-                    this_uva_data = uva_data or k in uva_ndata
+                    this_uva_data = uva_data or k in uva_ndata or True # always access over uva
                     this_storage_device = cpu_device if this_uva_data else storage_device
                     self.dstdata[k] = v[g_NID].to(this_storage_device)
                     if this_uva_data:
-                        if compress:
-                            self.pindata[k] = pin_memory_inplace(self.dstdata[k])
-                        else:
-                            self.pindata[k] = pin_memory_inplace(v)
-                g_ndata.pop(k)
+                        self.pindata[('ndata', k)] = pin_memory_inplace(self.dstdata[k] if compress else v)
 
-            for k, v in list(g_edata.items()):
+            for k, v in self.edata.items():
                 if k != EID:
-                    self.g.edata[k] = v[g_EID].to(storage_device)
-                g_edata.pop(k)
+                    this_uva_data = uva_data or True
+                    this_storage_device = cpu_device if this_uva_data else storage_device
+                    self.edata[k] = v[g_EID].to(this_storage_device)
+                    if this_uva_data:
+                        self.pindata[('edata', k)] = pin_memory_inplace(self.edata[k])
 
         self.random_seed = th.randint(0, 10000000000000, (1,), device=self.device)
         thd.all_reduce(self.random_seed, thd.ReduceOp.SUM, self.comm)
@@ -498,7 +500,7 @@ class DistGraph(object):
         self.l_offset = self.g_pr[self.permute[self.rank]].item()
         g_NID = slice(self.g_pr[self.permute[self.rank]], self.g_pr[self.permute[self.rank] + 1])
 
-        self.dstdata = {k: v[g_NID] for k, v in self.g.ndata.items()}
+        self.dstdata = {k: v[g_NID] for k, v in self.g_ndata.items()}
 
     @nvtx.annotate("sample_blocks", color="purple")
     def sample_blocks(self, seed_nodes, samplers, exclude_eids=None, prefetch_node_feats=[], prefetch_edge_feats=[], prefetch_labels=[]):
@@ -554,7 +556,7 @@ class DistGraph(object):
 
         def edge_slicer(block):
             for k in prefetch_edge_feats:
-                block.edata[k] = cuda_index_tensor(self.g.edata[k], block.edata[EID]).to(self.device)
+                block.edata[k] = cuda_index_tensor(self.edata[k], block.edata[EID]).to(self.device)
 
         blocks[0].slice_features = feature_slicer
         blocks[-1].slice_labels = label_slicer
