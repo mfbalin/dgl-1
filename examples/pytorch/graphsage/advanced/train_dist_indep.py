@@ -34,6 +34,8 @@ from itertools import chain, repeat
 
 from dgl.contrib.dist_sampling import cuda_index_tensor
 
+import nvtx
+
 def train(proc_id, world_size, args, g, num_classes, devices):
     torch.set_num_threads(os.cpu_count() // world_size)
     device = devices[proc_id]
@@ -166,7 +168,8 @@ def train(proc_id, world_size, args, g, num_classes, devices):
             if not args.no_timing:
                 barrier()
             events[2].record()
-            blocks = process_blocks(blocks)
+            with nvtx.annotate("fetch_feat", color="brown"):
+                blocks = process_blocks(blocks)
             events[3].record()
             x = blocks[0].srcdata.pop('features')
             y = blocks[-1].dstdata.pop('labels')

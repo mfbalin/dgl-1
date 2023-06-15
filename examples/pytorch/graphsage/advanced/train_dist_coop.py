@@ -77,10 +77,11 @@ def producer(args, g, idxs, reverse_eids, device, prefetch_edge_feats=[]):
                         if not args.no_timing:
                             barrier()
                         events[2].record()
-                        out[-1][0].slice_features(out[-1][0])()
-                        out[-1][-1].slice_labels(out[-1][-1])
-                        for block in out[-1]:
-                            block.slice_edges(block)
+                        with nvtx.annotate("fetch_feat", color="brown"):
+                            out[-1][0].slice_features(out[-1][0])
+                            out[-1][-1].slice_labels(out[-1][-1])
+                            for block in out[-1]:
+                                block.slice_edges(block)
                         events[3].record()
                         yield [dataloader_idx, it, epoch, out, events]
                         it += 1

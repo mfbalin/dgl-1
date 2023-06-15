@@ -378,7 +378,6 @@ class DistGraph(object):
         
         print(self.rank, self.g.num_nodes(), self.g.num_edges(), self.pr, self.g_pr, self.l_offset, self.node_ranges, self.g_node_ranges, self.permute, self.inv_permute, random_seed)
         self.last_comm = self.comm
-        self.works = []
         self.caches = {} if cache_size <= 0 else {key: GPUCache(cache_size, self.dstdata[key].shape[1], g.idtype) for key in uva_ndata}
 
     def sorted_global_partition(self, ids, g_comm):
@@ -404,15 +403,11 @@ class DistGraph(object):
             i = self.local_part(ids)
         return ids - self.pr[i] + i * self.pow_of_two
     
-    def synchronize_works(self, ins=None):
-        for work in self.works:
-            if work is not None:
-                work.wait()
-        self.works = []
+    def synchronize_comms(self, ins=None):
         if ins is not None:
             th.flatten(ins[0])[0] += 0
     
-    def all_to_all(self, outs, ins, async_op=False):
+    def all_to_all(self, outs, ins):
         g_comm = any(th.numel(t) > 0 and not (self.group_start <= i and i < self.group_end) for ts in [ins, outs] for i, t in enumerate(ts))
         comm = self.comm if g_comm else self.l_comm
         if not g_comm:
@@ -420,11 +415,8 @@ class DistGraph(object):
             ins = ins[self.group_start: self.group_end]
         if self.last_comm != comm:
             self.last_comm = comm
-            self.synchronize_works(ins)
-        work = thd.all_to_all(outs, ins, comm, async_op)
-        if self.comm != self.l_comm:
-            self.works.append(work)
-        return work
+            self.synchronize_comms(ins)
+        thd.all_to_all(outs, ins, comm)
     
     # local ids in, local ids out
     @nvtx.annotate("id exchange", color="purple")
@@ -537,7 +529,6 @@ class DistGraph(object):
             blocks.insert(0, blocks_i[0])
         
         def feature_slicer(block):
-            srcdataevents = {}
             cache_miss = 1
             for k in prefetch_node_feats:
                 input_nodes = block.cached_variables[1] - self.l_offset
@@ -553,18 +544,9 @@ class DistGraph(object):
                 out = th.empty((sum(request_counts),) + tensor.shape[1:], dtype=tensor.dtype, device=tensor.device)
                 par_out = list(th.split(out, request_counts))
                 par_out = [par_out[i] for i in self.permute_host]
-                work = self.all_to_all(par_out, list(th.split(tensor, requested_sizes)), True)
+                self.all_to_all(par_out, list(th.split(tensor, requested_sizes)))
                 out.cache_miss = cache_miss
                 block.srcdata[k] = out # .to(th.float)
-                srcdataevents[k] = work
-            
-            def wait(k=None):
-                if k is None:
-                    for k, work in srcdataevents.items():
-                        work.wait()
-                else:
-                    srcdataevents[k].wait()
-            return wait
         
         def label_slicer(block):
             for k in prefetch_labels:
