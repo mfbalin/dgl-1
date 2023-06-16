@@ -532,8 +532,9 @@ class DistGraph(object):
         
         def feature_slicer(block):
             cache_miss = 1
+            input_nodes = block.cached_variables[3] - self.l_offset
+            inv_ids = block.cached_variables[4]
             for k in prefetch_node_feats:
-                input_nodes = block.cached_variables[3] - self.l_offset
                 if k in self.caches:
                     cache = self.caches[k]
                     tensor, missing_index, missing_keys = cache.query(input_nodes)
@@ -551,8 +552,9 @@ class DistGraph(object):
                 block.srcdata[k] = out # .to(th.float)
         
         def label_slicer(block):
+            nodes = output_nodes - self.l_offset
             for k in prefetch_labels:
-                block.dstdata[k] = cuda_index_tensor(self.dstdata[k], output_nodes - self.l_offset).to(self.device)
+                block.dstdata[k] = cuda_index_tensor(self.dstdata[k], nodes).to(self.device)
 
         def edge_slicer(block):
             for k in prefetch_edge_feats:
