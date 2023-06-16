@@ -533,7 +533,7 @@ class DistGraph(object):
         def feature_slicer(block):
             cache_miss = 1
             for k in prefetch_node_feats:
-                input_nodes = block.cached_variables[1] - self.l_offset
+                input_nodes = block.cached_variables[3] - self.l_offset
                 if k in self.caches:
                     cache = self.caches[k]
                     tensor, missing_index, missing_keys = cache.query(input_nodes)
@@ -546,7 +546,7 @@ class DistGraph(object):
                 out = th.empty((sum(request_counts),) + tensor.shape[1:], dtype=tensor.dtype, device=tensor.device)
                 par_out = list(th.split(out, request_counts))
                 par_out = [par_out[i] for i in self.permute_host]
-                self.all_to_all(par_out, list(th.split(tensor, requested_sizes)))
+                self.all_to_all(par_out, list(th.split(tensor[inv_ids], requested_sizes))) # look at pull
                 out.cache_miss = cache_miss
                 block.srcdata[k] = out # .to(th.float)
         
