@@ -8,7 +8,7 @@ for algo in coop indep; do
 
 if [[ ("${sampler}" == labor && ${cache_size} -gt 0) || ${kappa} -le 1 ]]; then
 
-bash ./experiment_${algo}.sh ${batch_size} ${dataset} ${cache_size} ${sampler} ${kappa}
+bash ./experiment_${algo}.sh ${batch_size} ${dataset} ${cache_size} ${sampler} ${kappa} ${3} # last argument is num epochs
 
 fi
 
