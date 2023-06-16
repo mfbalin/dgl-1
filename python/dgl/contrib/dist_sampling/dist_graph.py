@@ -380,6 +380,7 @@ class DistGraph(object):
         
         print(self.rank, self.g.num_nodes(), self.g.num_edges(), self.pr, self.g_pr, self.l_offset, self.node_ranges, self.g_node_ranges, self.permute, self.inv_permute, random_seed)
         self.last_comm = self.comm
+        self.works = []
         self.caches = {} if cache_size <= 0 else {key: GPUCache(cache_size, self.dstdata[key].shape[1], g.idtype) for key in uva_ndata}
 
     def sorted_global_partition(self, ids, g_comm):
@@ -406,10 +407,14 @@ class DistGraph(object):
         return ids - self.pr[i] + i * self.pow_of_two
     
     def synchronize_comms(self, ins=None):
+        for work in self.works:
+            if work is not None:
+                work.wait()
+        self.works = []
         if ins is not None:
             th.flatten(ins[0])[0] += 0
     
-    def all_to_all(self, outs, ins):
+    def all_to_all(self, outs, ins, async_op=False):
         g_comm = any(th.numel(t) > 0 and not (self.group_start <= i and i < self.group_end) for ts in [ins, outs] for i, t in enumerate(ts))
         comm = self.comm if g_comm else self.l_comm
         if not g_comm:
@@ -418,8 +423,11 @@ class DistGraph(object):
         if self.last_comm != comm:
             self.last_comm = comm
             self.synchronize_comms(ins)
-        thd.all_to_all(outs, ins, comm)
-    
+        work = thd.all_to_all(outs, ins, comm, async_op)
+        if self.comm != self.l_comm and async_op:
+            self.works.append(work)
+        return work
+
     # local ids in, local ids out
     @nvtx.annotate("id exchange", color="purple")
     def exchange_node_ids(self, nodes, g_comm):
@@ -531,6 +539,7 @@ class DistGraph(object):
             blocks.insert(0, blocks_i[0])
         
         def feature_slicer(block):
+            srcdataevents = {}
             cache_miss = 1
             input_nodes = block.cached_variables[3] - self.l_offset
             inv_ids = block.cached_variables[4]
@@ -547,9 +556,18 @@ class DistGraph(object):
                 out = th.empty((sum(request_counts),) + tensor.shape[1:], dtype=tensor.dtype, device=tensor.device)
                 par_out = list(th.split(out, request_counts))
                 par_out = [par_out[i] for i in self.permute_host]
-                self.all_to_all(par_out, list(th.split(tensor[inv_ids], requested_sizes))) # look at pull
+                work = self.all_to_all(par_out, list(th.split(tensor[inv_ids], requested_sizes)), True) # look at pull
                 out.cache_miss = cache_miss
                 block.srcdata[k] = out # .to(th.float)
+                srcdataevents[k] = work
+            
+            def wait(k=None):
+                if k is None:
+                    for k, work in srcdataevents.items():
+                        work.wait()
+                else:
+                    srcdataevents[k].wait()
+            return wait
         
         def label_slicer(block):
             nodes = output_nodes - self.l_offset
