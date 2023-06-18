@@ -38,8 +38,8 @@ import nvtx
 
 def train(proc_id, world_size, args, g, num_classes, devices):
     torch.set_num_threads(os.cpu_count() // world_size)
-    device = devices[proc_id]
-    torch.cuda.set_device(device)
+    torch.cuda.set_device(devices[proc_id])
+    device = torch.cuda.current_device()
     pg_options = torch._C._distributed_c10d.ProcessGroupNCCL.Options()
     pg_options.is_high_priority_stream = True
     pg_options._timeout = timedelta(minutes=1)
