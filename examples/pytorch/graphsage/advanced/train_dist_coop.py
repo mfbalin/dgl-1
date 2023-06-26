@@ -20,6 +20,8 @@
 #  */
 
 import torch as th
+th.backends.cuda.matmul.allow_tf32 = True
+th.backends.cudnn.allow_tf32 = True
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as thd

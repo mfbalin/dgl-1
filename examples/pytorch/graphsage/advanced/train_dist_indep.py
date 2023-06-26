@@ -7,8 +7,9 @@ from collections import OrderedDict
 
 import dgl
 
-import numpy as np
 import torch
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
