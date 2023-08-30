@@ -784,19 +784,10 @@ inline int64_t LaborPick(
     std::iota(picked_data_ptr, picked_data_ptr + num_neighbors, offset);
     return num_neighbors;
   }
-  // Assuming max_degree of a vertex is <= 4 billion.
-  std::array<std::pair<float, uint32_t>, StackSize> heap;
-  auto heap_data = heap.data();
-  torch::Tensor heap_tensor;
-  if (fanout > StackSize) {
-    constexpr int factor = sizeof(heap_data[0]) / sizeof(int32_t);
-    heap_tensor = torch::empty({fanout * factor}, torch::kInt32);
-    heap_data = reinterpret_cast<std::pair<float, uint32_t>*>(
-        heap_tensor.data_ptr<int32_t>());
-  }
   const ProbsType* local_probs_data =
       NonUniform ? probs_or_mask.value().data_ptr<ProbsType>() + offset
                  : nullptr;
+  int64_t num_sampled = 0;
   AT_DISPATCH_INTEGRAL_TYPES(
       args.indices.scalar_type(), "LaborPickMain", ([&] {
         const scalar_t* local_indices_data =
@@ -823,52 +814,54 @@ inline int64_t LaborPick(
           // is O((fanout + num_neighbors) log(fanout)). It is possible to
           // decrease the logarithmic factor down to
           // O(log(min(fanout, num_neighbors))).
-          std::array<float, StackSize> remaining;
+          std::array<std::pair<float, uint32_t>, StackSize> remaining, heap;
           auto remaining_data = remaining.data();
           torch::Tensor remaining_tensor;
+          auto heap_data = heap.data();
+          torch::Tensor heap_tensor;
           if (num_neighbors > StackSize) {
-            remaining_tensor = torch::empty({num_neighbors}, torch::kFloat32);
-            remaining_data = remaining_tensor.data_ptr<float>();
+            constexpr int factor = sizeof(heap_data[0]) / sizeof(int8_t);
+            remaining_tensor =
+                torch::empty({num_neighbors * factor}, torch::kInt8);
+            remaining_data = reinterpret_cast<std::pair<float, uint32_t>*>(
+                remaining_tensor.data_ptr());
+            heap_tensor = torch::empty({num_neighbors * factor}, torch::kInt8);
+            heap_data = reinterpret_cast<std::pair<float, uint32_t>*>(
+                heap_tensor.data_ptr());
           }
-          std::fill_n(remaining_data, num_neighbors, 1.f);
+          std::fill_n(remaining_data, num_neighbors, std::make_pair(1.f, 0u));
           auto heap_end = heap_data;
-          const auto init_count = (num_neighbors + fanout - 1) / num_neighbors;
-          auto sample_neighbor_i_with_index_t_jth_time =
-              [&](scalar_t t, int64_t j, uint32_t i) {
-                auto rnd = labor::jth_sorted_uniform_random(
-                    args.random_seed, t, args.num_nodes, j, remaining_data[i],
-                    fanout - j);  // r_t
-                if constexpr (NonUniform) {
-                  safe_divide(rnd, local_probs_data[i]);
-                }  // r_t / \pi_t
-                if (heap_end < heap_data + fanout) {
-                  heap_end[0] = std::make_pair(rnd, i);
-                  if (++heap_end >= heap_data + fanout) {
-                    std::make_heap(heap_data, heap_data + fanout);
-                  }
-                  return false;
-                } else if (rnd < heap_data[0].first) {
-                  std::pop_heap(heap_data, heap_data + fanout);
-                  heap_data[fanout - 1] = std::make_pair(rnd, i);
-                  std::push_heap(heap_data, heap_data + fanout);
-                  return false;
-                } else {
-                  remaining_data[i] = -1;
-                  return true;
-                }
-              };
           for (uint32_t i = 0; i < num_neighbors; ++i) {
             const auto t = local_indices_data[i];
-            for (int64_t j = 0; j < init_count; j++) {
-              sample_neighbor_i_with_index_t_jth_time(t, j, i);
+            ProbsType p = 1.f;
+            if constexpr (NonUniform) {
+              p = local_probs_data[i];
+              if (!(p > 0)) continue;
             }
+            auto rnd = labor::jth_sorted_uniform_random(
+                args.random_seed, t, args.num_nodes, 0, remaining_data[i].first,
+                fanout);  // r_t
+            if constexpr (NonUniform) {
+              rnd /= p;
+            }  // r_t / \pi_t
+            heap_end[0] = std::make_pair(rnd, i);
+            ++heap_end;
           }
-          for (uint32_t i = 0; i < num_neighbors; ++i) {
-            if (remaining_data[i] == -1) continue;
+          std::make_heap(heap_data, heap_end);
+          for (int64_t sampled_i = 0; sampled_i < fanout; ++sampled_i) {
+            std::pop_heap(heap_data, heap_end);
+            const auto i = heap_end[-1].second;
             const auto t = local_indices_data[i];
-            for (int64_t j = init_count; j < fanout; ++j) {
-              if (sample_neighbor_i_with_index_t_jth_time(t, j, i)) break;
-            }
+            const auto j = ++remaining_data[i].second;
+            auto rnd = labor::jth_sorted_uniform_random(
+                args.random_seed, t, args.num_nodes, j, remaining_data[i].first,
+                fanout - j);  // r_t
+            if constexpr (NonUniform) {
+              rnd /= local_probs_data[i];
+            }  // r_t / \pi_t
+            heap_end[-1].first = rnd;
+            std::push_heap(heap_data, heap_end);
+            picked_data_ptr[num_sampled++] = offset + i;
           }
         } else {
           // [Algorithm]
@@ -888,6 +881,16 @@ inline int64_t LaborPick(
           // + f log(n/f) log f) = O(n + f log(f) log(n/f)). If f << n (f is a
           // constant in almost all cases), then the average complexity is
           // O(num_neighbors).
+          // Assuming max_degree of a vertex is <= 4 billion.
+          std::array<std::pair<float, uint32_t>, StackSize> heap;
+          auto heap_data = heap.data();
+          torch::Tensor heap_tensor;
+          if (fanout > StackSize) {
+            constexpr int factor = sizeof(heap_data[0]) / sizeof(int32_t);
+            heap_tensor = torch::empty({fanout * factor}, torch::kInt32);
+            heap_data = reinterpret_cast<std::pair<float, uint32_t>*>(
+                heap_tensor.data_ptr<int32_t>());
+          }
           for (uint32_t i = 0; i < fanout; ++i) {
             const auto t = local_indices_data[i];
             auto rnd =
@@ -913,15 +916,14 @@ inline int64_t LaborPick(
               std::push_heap(heap_data, heap_data + fanout);
             }
           }
+          for (int64_t i = 0; i < fanout; ++i) {
+            const auto [rnd, j] = heap_data[i];
+            if (!NonUniform || rnd < std::numeric_limits<float>::infinity()) {
+              picked_data_ptr[num_sampled++] = offset + j;
+            }
+          }
         }
       }));
-  int64_t num_sampled = 0;
-  for (int64_t i = 0; i < fanout; ++i) {
-    const auto [rnd, j] = heap_data[i];
-    if (!NonUniform || rnd < std::numeric_limits<float>::infinity()) {
-      picked_data_ptr[num_sampled++] = offset + j;
-    }
-  }
   return num_sampled;
 }
 
