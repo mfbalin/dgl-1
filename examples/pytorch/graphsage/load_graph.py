@@ -125,6 +125,36 @@ def load_ogb(name, root="dataset"):
     print("finish constructing", name)
     return graph, num_labels
 
+def load_igb(name='full', root='/localscratch/IGB-Datasets/igb/'):
+    import argparse
+    from igb.dataloader import IGBHeteroDGLDatasetMassive
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--path', type=str, default=root, 
+        help='path containing the datasets')
+    parser.add_argument('--dataset_size', type=str, default=name,
+        choices=['tiny', 'small', 'medium', 'large', 'full'], 
+        help='size of the datasets')
+    parser.add_argument('--num_classes', type=int, default=2983, 
+        choices=[19, 2983], help='number of classes')
+    parser.add_argument('--graph_in_memory', type=int, default=1, 
+        choices=[0, 1], help='0:read only mmap_mode=r, 1:load into memory')
+    parser.add_argument('--synthetic', type=int, default=0,
+        choices=[0, 1], help='0:nlp-node embeddings, 1:random')
+    args = parser.parse_args("")
+    dataset = IGBHeteroDGLDatasetMassive(args)
+    g = dataset[0]
+    hg = dgl.to_homogeneous(g)
+    train_mask = th.zeros(hg.num_nodes(), dtype=th.bool)
+    val_mask = th.zeros(hg.num_nodes(), dtype=th.bool)
+    test_mask = th.zeros(hg.num_nodes(), dtype=th.bool)
+    train_mask[g.nodes['paper'].data['train_mask'].nonzero()] = True
+    val_mask[g.nodes['paper'].data['val_mask'].nonzero()] = True
+    test_mask[g.nodes['paper'].data['test_mask'].nonzero()] = True
+    hg.ndata['train_mask'] = train_mask
+    hg.ndata['val_mask'] = val_mask
+    hg.ndata['test_mask'] = test_mask
+    return hg, args.num_classes
+
 def inductive_split(g):
     """Split the graph into training graph, validation graph, and test graph by training
     and validation masks.  Suitable for inductive models."""
