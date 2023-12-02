@@ -16,7 +16,7 @@
 namespace graphbolt {
 namespace sampling {
 
-enum SamplerType { NEIGHBOR, LABOR };
+enum SamplerType { NEIGHBOR, LABOR, BANDIT_LABOR };
 
 template <SamplerType S>
 struct SamplerArgs;
@@ -29,6 +29,21 @@ struct SamplerArgs<SamplerType::LABOR> {
   const torch::Tensor& indices;
   int64_t random_seed;
   int64_t num_nodes;
+};
+
+template <>
+struct SamplerArgs<SamplerType::BANDIT_LABOR> {
+  const torch::Tensor& indices;
+  float* loss;
+  float* x;
+  float* s;
+  float* sampling_prob;
+  int64_t* last_iteration;
+  int64_t iteration;
+  int64_t random_seed;
+  int64_t num_nodes;
+  float c;
+  float d;
 };
 
 /**
@@ -145,7 +160,7 @@ class FusedCSCSamplingGraph : public torch::CustomClassHolder {
   }
 
   /** @brief Get the node attributes dictionary. */
-  inline const torch::optional<EdgeAttrMap> NodeAttributes() const {
+  inline const torch::optional<NodeAttrMap> NodeAttributes() const {
     return node_attributes_;
   }
 
@@ -192,7 +207,7 @@ class FusedCSCSamplingGraph : public torch::CustomClassHolder {
 
   /** @brief Set the node attributes dictionary. */
   inline void SetNodeAttributes(
-      const torch::optional<EdgeAttrMap>& node_attributes) {
+      const torch::optional<NodeAttrMap>& node_attributes) {
     node_attributes_ = node_attributes;
   }
 
@@ -280,7 +295,7 @@ class FusedCSCSamplingGraph : public torch::CustomClassHolder {
    */
   c10::intrusive_ptr<FusedSampledSubgraph> SampleNeighbors(
       const torch::Tensor& nodes, const std::vector<int64_t>& fanouts,
-      bool replace, bool layer, bool return_eids,
+      bool replace, bool layer, bool bandit, bool return_eids,
       torch::optional<std::string> probs_name) const;
 
   /**
@@ -532,6 +547,13 @@ int64_t LaborPick(
     const torch::TensorOptions& options,
     const torch::optional<torch::Tensor>& probs_or_mask,
     SamplerArgs<SamplerType::LABOR> args, PickedType* picked_data_ptr);
+
+template <typename ProbsType, typename PickedType, int StackSize = 1024>
+int64_t BanditLaborPick(
+    int64_t offset, int64_t num_neighbors, int64_t fanout,
+    const torch::TensorOptions& options,
+    const torch::optional<torch::Tensor>& probs_or_mask,
+    SamplerArgs<SamplerType::BANDIT_LABOR> args, PickedType* picked_data_ptr);
 
 }  // namespace sampling
 }  // namespace graphbolt

@@ -314,12 +314,33 @@ class FusedCSCSamplingGraph(SamplingGraph):
         """
         return self._c_csc_graph.edge_attributes()
 
+    @property
+    def node_attributes(self) -> Optional[Dict[str, torch.Tensor]]:
+        """Returns the node attributes dictionary.
+
+        Returns
+        -------
+        torch.Tensor or None
+            If present, returns a dictionary of node attributes. Each key
+            represents the attribute's name, while the corresponding value
+            holds the attribute's specific value. The length of each value
+            should match the total number of nodes."
+        """
+        return self._c_csc_graph.node_attributes()
+
     @edge_attributes.setter
     def edge_attributes(
         self, edge_attributes: Optional[Dict[str, torch.Tensor]]
     ) -> None:
         """Sets the edge attributes dictionary."""
         self._c_csc_graph.set_edge_attributes(edge_attributes)
+    
+    @node_attributes.setter
+    def node_attributes(
+        self, node_attributes: Optional[Dict[str, torch.Tensor]]
+    ) -> None:
+        """Sets the edge attributes dictionary."""
+        self._c_csc_graph.set_node_attributes(node_attributes)
 
     def in_subgraph(
         self,
@@ -723,6 +744,7 @@ class FusedCSCSamplingGraph(SamplingGraph):
             fanouts.tolist(),
             replace,
             False,
+            False,
             has_original_eids,
             probs_name,
         )
@@ -817,11 +839,115 @@ class FusedCSCSamplingGraph(SamplingGraph):
             fanouts.tolist(),
             replace,
             True,
+            False,
             has_original_eids,
             probs_name,
         )
 
         if not output_cscformat:
+            return self._convert_to_fused_sampled_subgraph(C_sampled_subgraph)
+        else:
+            return self._convert_to_sampled_subgraph(C_sampled_subgraph)
+
+    def sample_bandit_layer_neighbors(
+        self,
+        nodes: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        fanouts: torch.Tensor,
+        deduplicate=True,
+    ) -> Union[FusedSampledSubgraphImpl, SampledSubgraphImpl]:
+        """Sample neighboring edges of the given nodes and return the induced
+        subgraph via layer-neighbor sampling from the NeurIPS 2023 paper
+        `Layer-Neighbor Sampling -- Defusing Neighborhood Explosion in GNNs
+        <https://arxiv.org/abs/2210.13339>`__
+
+        Parameters
+        ----------
+        nodes: torch.Tensor or Dict[str, torch.Tensor]
+            IDs of the given seed nodes.
+              - If `nodes` is a tensor: It means the graph is homogeneous
+                graph, and ids inside are homogeneous ids.
+              - If `nodes` is a dictionary: The keys should be node type and
+                ids inside are heterogeneous ids.
+        fanouts: torch.Tensor
+            The number of edges to be sampled for each node with or without
+            considering edge types.
+              - When the length is 1, it indicates that the fanout applies to
+                all neighbors of the node as a collective, regardless of the
+                edge type.
+              - Otherwise, the length should equal to the number of edge
+                types, and each fanout value corresponds to a specific edge
+                type of the nodes.
+            The value of each fanout should be >= 0 or = -1.
+              - When the value is -1, all neighbors (with non-zero probability,
+                if weighted) will be sampled once regardless of replacement. It
+                is equivalent to selecting all neighbors with non-zero
+                probability when the fanout is >= the number of neighbors (and
+                replace is set to false).
+              - When the value is a non-negative integer, it serves as a
+                minimum threshold for selecting neighbors.
+        replace: bool
+            Boolean indicating whether the sample is preformed with or
+            without replacement. If True, a value can be selected multiple
+            times. Otherwise, each value can be selected only once.
+        probs_name: str, optional
+            An optional string specifying the name of an edge attribute. This
+            attribute tensor should contain (unnormalized) probabilities
+            corresponding to each neighboring edge of a node. It must be a 1D
+            floating-point or boolean tensor, with the number of elements
+            equalling the total number of edges.
+        Returns
+        -------
+        FusedSampledSubgraphImpl
+            The sampled subgraph.
+
+        Examples
+        --------
+        >>> import dgl.graphbolt as gb
+        >>> import torch
+        >>> ntypes = {"n1": 0, "n2": 1}
+        >>> etypes = {"n1:e1:n2": 0, "n2:e2:n1": 1}
+        >>> metadata = gb.GraphMetadata(ntypes, etypes)
+        >>> indptr = torch.LongTensor([0, 2, 4, 6, 7, 9])
+        >>> indices = torch.LongTensor([2, 4, 2, 3, 0, 1, 1, 0, 1])
+        >>> node_type_offset = torch.LongTensor([0, 2, 5])
+        >>> type_per_edge = torch.LongTensor([1, 1, 1, 1, 0, 0, 0, 0, 0])
+        >>> graph = gb.from_fused_csc(indptr, indices, type_per_edge=type_per_edge,
+        ...     node_type_offset=node_type_offset, metadata=metadata)
+        >>> nodes = {'n1': torch.LongTensor([0]), 'n2': torch.LongTensor([0])}
+        >>> fanouts = torch.tensor([1, 1])
+        >>> subgraph = graph.sample_layer_neighbors(nodes, fanouts)
+        >>> print(subgraph.node_pairs)
+        defaultdict(<class 'list'>, {'n1:e1:n2': (tensor([1]),
+          tensor([0])), 'n2:e2:n1': (tensor([2]), tensor([0]))})
+        """
+        if isinstance(nodes, dict):
+            nodes = self._convert_to_homogeneous_nodes(nodes)
+
+        self._check_sampler_arguments(nodes, fanouts, None)
+        has_original_eids = (
+            self.edge_attributes is not None
+            and ORIGINAL_EDGE_ID in self.edge_attributes
+        )
+        if "bandit_labor_loss" not in self.edge_attributes:
+            eattr = self.edge_attributes
+            nattr = self.node_attributes
+            eattr["bandit_labor_loss"] = torch.zeros(self.total_num_edges, dtype=torch.float, device=self.indices.device)
+            nattr["bandit_labor_x"] = -torch.ones(self.total_num_nodes, dtype=torch.float, device=self.indptr.device)
+            nattr["bandit_labor_s"] = torch.zeros(self.total_num_nodes, dtype=torch.float, device=self.indptr.device)
+            nattr["bandit_labor_last_iteration"] = torch.zeros(self.total_num_nodes, dtype=torch.int64, device=self.indptr.device)
+            self.edge_attributes = eattr
+            self.node_attributes = nattr
+        C_sampled_subgraph = self._c_csc_graph.sample_neighbors(
+            nodes,
+            fanouts.tolist(),
+            False,
+            True,
+            True,
+            has_original_eids,
+            None,
+        )
+
+        if deduplicate:
             return self._convert_to_fused_sampled_subgraph(C_sampled_subgraph)
         else:
             return self._convert_to_sampled_subgraph(C_sampled_subgraph)
@@ -900,25 +1026,15 @@ class FusedCSCSamplingGraph(SamplingGraph):
     def to(self, device: torch.device) -> None:  # pylint: disable=invalid-name
         """Copy `FusedCSCSamplingGraph` to the specified device."""
 
-        def _to(x, device):
+        def _to(x):
             return x.to(device) if hasattr(x, "to") else x
 
-        self.csc_indptr = recursive_apply(
-            self.csc_indptr, lambda x: _to(x, device)
-        )
-        self.indices = recursive_apply(self.indices, lambda x: _to(x, device))
-        self.node_type_offset = recursive_apply(
-            self.node_type_offset, lambda x: _to(x, device)
-        )
-        self.type_per_edge = recursive_apply(
-            self.type_per_edge, lambda x: _to(x, device)
-        )
-        self.node_attributes = recursive_apply(
-            self.node_attributes, lambda x: _to(x, device)
-        )
-        self.edge_attributes = recursive_apply(
-            self.edge_attributes, lambda x: _to(x, device)
-        )
+        self.csc_indptr = recursive_apply(self.csc_indptr, _to)
+        self.indices = recursive_apply(self.indices, _to)
+        self.node_type_offset = recursive_apply(self.node_type_offset, _to)
+        self.type_per_edge = recursive_apply(self.type_per_edge, _to)
+        self.node_attributes = recursive_apply(self.node_attributes, _to)
+        self.edge_attributes = recursive_apply(self.edge_attributes, _to)
 
         return self
 

@@ -57,13 +57,15 @@ struct FusedSampledSubgraph : torch::CustomClassHolder {
       torch::Tensor original_column_node_ids,
       torch::optional<torch::Tensor> original_row_node_ids = torch::nullopt,
       torch::optional<torch::Tensor> original_edge_ids = torch::nullopt,
-      torch::optional<torch::Tensor> type_per_edge = torch::nullopt)
+      torch::optional<torch::Tensor> type_per_edge = torch::nullopt,
+      torch::optional<torch::Tensor> sampling_prob = torch::nullopt)
       : indptr(indptr),
         indices(indices),
         original_column_node_ids(original_column_node_ids),
         original_row_node_ids(original_row_node_ids),
         original_edge_ids(original_edge_ids),
-        type_per_edge(type_per_edge) {}
+        type_per_edge(type_per_edge),
+        sampling_prob(sampling_prob) {}
 
   FusedSampledSubgraph() = default;
 
@@ -114,6 +116,12 @@ struct FusedSampledSubgraph : torch::CustomClassHolder {
    * subgraph.
    */
   torch::optional<torch::Tensor> type_per_edge;
+
+  /**
+   * @brief Actual sampling probability of each edge. The length of it is equal
+   * to the number of edges in the subgraph.
+   */
+  torch::optional<torch::Tensor> sampling_prob;
 };
 
 }  // namespace sampling

@@ -102,6 +102,11 @@ c10::intrusive_ptr<FusedCSCSamplingGraph> FusedCSCSamplingGraph::Create(
       TORCH_CHECK(pair.value().size(0) == indices.size(0));
     }
   }
+  if (node_attributes.has_value()) {
+    for (const auto& pair : node_attributes.value()) {
+      TORCH_CHECK(pair.value().size(0) == indptr.size(0) - 1);
+    }
+  }
   return c10::make_intrusive<FusedCSCSamplingGraph>(
       indptr, indices, node_type_offset, type_per_edge, node_type_to_id,
       edge_type_to_id, node_attributes, edge_attributes);
@@ -149,6 +154,25 @@ void FusedCSCSamplingGraph::Load(torch::serialize::InputArchive& archive) {
           archive, "FusedCSCSamplingGraph/has_edge_attributes")) {
     edge_attributes_ = read_from_archive<EdgeAttrMap>(
         archive, "FusedCSCSamplingGraph/edge_attributes");
+  }
+
+  // Optional node attributes.
+  torch::IValue has_node_attributes;
+  if (archive.try_read(
+          "FusedCSCSamplingGraph/has_node_attributes", has_node_attributes) &&
+      has_node_attributes.toBool()) {
+    torch::Dict<torch::IValue, torch::IValue> generic_dict =
+        read_from_archive(archive, "FusedCSCSamplingGraph/node_attributes")
+            .toGenericDict();
+    EdgeAttrMap target_dict;
+    for (const auto& pair : generic_dict) {
+      std::string key = pair.key().toStringRef();
+      torch::Tensor value = pair.value().toTensor();
+      // Use move to avoid copy.
+      target_dict.insert(std::move(key), std::move(value));
+    }
+    // Same as above.
+    node_attributes_ = std::move(target_dict);
   }
 }
 
@@ -199,6 +223,13 @@ void FusedCSCSamplingGraph::Save(
     archive.write(
         "FusedCSCSamplingGraph/edge_attributes", edge_attributes_.value());
   }
+  archive.write(
+      "FusedCSCSamplingGraph/has_node_attributes",
+      node_attributes_.has_value());
+  if (node_attributes_) {
+    archive.write(
+        "FusedCSCSamplingGraph/node_attributes", node_attributes_.value());
+  }
 }
 
 void FusedCSCSamplingGraph::SetState(
@@ -206,7 +237,7 @@ void FusedCSCSamplingGraph::SetState(
         state) {
   // State is a dict of dicts. The tensor-type attributes are stored in the dict
   // with key "independent_tensors". The dict-type attributes (edge_attributes)
-  // are stored directly with the their name as the key.
+  // & (node_attributes) are stored directly with the their name as the key.
   const auto& independent_tensors = state.at("independent_tensors");
   TORCH_CHECK(
       independent_tensors.at("version_number")
@@ -233,13 +264,16 @@ void FusedCSCSamplingGraph::SetState(
   if (state.find("edge_attributes") != state.end()) {
     edge_attributes_ = state.at("edge_attributes");
   }
+  if (state.find("node_attributes") != state.end()) {
+    node_attributes_ = state.at("node_attributes");
+  }
 }
 
 torch::Dict<std::string, torch::Dict<std::string, torch::Tensor>>
 FusedCSCSamplingGraph::GetState() const {
   // State is a dict of dicts. The tensor-type attributes are stored in the dict
   // with key "independent_tensors". The dict-type attributes (edge_attributes)
-  // are stored directly with the their name as the key.
+  // & (node_attributes) are stored directly with the their name as the key.
   torch::Dict<std::string, torch::Dict<std::string, torch::Tensor>> state;
   torch::Dict<std::string, torch::Tensor> independent_tensors;
   // Serialization version number. It indicates the serialization method of the
@@ -265,6 +299,9 @@ FusedCSCSamplingGraph::GetState() const {
   }
   if (edge_attributes_.has_value()) {
     state.insert("edge_attributes", edge_attributes_.value());
+  }
+  if (node_attributes_.has_value()) {
+    state.insert("node_attributes", node_attributes_.value());
   }
   return state;
 }
@@ -378,18 +415,30 @@ auto GetPickFn(
     const torch::optional<torch::Tensor>& type_per_edge,
     const torch::optional<torch::Tensor>& probs_or_mask, SamplerArgs<S> args) {
   return [&fanouts, replace, &options, &type_per_edge, &probs_or_mask, args](
-             int64_t offset, int64_t num_neighbors, auto picked_data_ptr) {
+             int64_t offset, int64_t num_neighbors, auto picked_data_ptr,
+             int64_t nid, int64_t picked_offset, auto sampling_prob_ptr) {
+    auto nargs = args;
+    if constexpr (S == SamplerType::BANDIT_LABOR) {
+      nargs.loss += offset;
+      nargs.x += nid;
+      nargs.s += nid;
+      nargs.sampling_prob = sampling_prob_ptr + picked_offset;
+      nargs.last_iteration += nid;
+      const auto num_iters = nargs.iteration - *nargs.last_iteration;
+      nargs.d = std::pow(nargs.d, num_iters);
+      *nargs.s = *nargs.s * nargs.d + 1.f;
+    }
     // If fanouts.size() > 1, perform sampling for each edge type of each
     // node; otherwise just sample once for each node with no regard of edge
     // types.
     if (fanouts.size() > 1) {
       return PickByEtype(
           offset, num_neighbors, fanouts, replace, options,
-          type_per_edge.value(), probs_or_mask, args, picked_data_ptr);
+          type_per_edge.value(), probs_or_mask, nargs, picked_data_ptr);
     } else {
       int64_t num_sampled = Pick(
           offset, num_neighbors, fanouts[0], replace, options, probs_or_mask,
-          args, picked_data_ptr);
+          nargs, picked_data_ptr);
       if (type_per_edge) {
         std::sort(picked_data_ptr, picked_data_ptr + num_sampled);
       }
@@ -415,6 +464,7 @@ FusedCSCSamplingGraph::SampleNeighborsImpl(
   torch::Tensor subgraph_indptr;
   torch::Tensor subgraph_indices;
   torch::optional<torch::Tensor> subgraph_type_per_edge = torch::nullopt;
+  torch::optional<torch::Tensor> sampling_prob = torch::nullopt;
 
   AT_DISPATCH_INTEGRAL_TYPES(
       indptr_.scalar_type(), "SampleNeighborsImplWrappedWithIndptr", ([&] {
@@ -463,6 +513,9 @@ FusedCSCSamplingGraph::SampleNeighborsImpl(
                 subgraph_type_per_edge = torch::empty(
                     {total_length}, type_per_edge_.value().options());
               }
+              sampling_prob = torch::empty({total_length},
+                  torch::TensorOptions().dtype(torch::kFloat32));
+              auto sampling_prob_ptr = sampling_prob.value().data_ptr<float>();
 
               // Step 4. Pick neighbors for each node.
               auto picked_eids_data_ptr = picked_eids.data_ptr<indptr_t>();
@@ -480,7 +533,8 @@ FusedCSCSamplingGraph::SampleNeighborsImpl(
                       if (picked_number > 0) {
                         auto actual_picked_count = pick_fn(
                             offset, num_neighbors,
-                            picked_eids_data_ptr + picked_offset);
+                            picked_eids_data_ptr + picked_offset,
+                            nid, picked_offset, sampling_prob_ptr);
                         TORCH_CHECK(
                             actual_picked_count == picked_number,
                             "Actual picked count doesn't match the calculated "
@@ -530,12 +584,12 @@ FusedCSCSamplingGraph::SampleNeighborsImpl(
 
   return c10::make_intrusive<FusedSampledSubgraph>(
       subgraph_indptr, subgraph_indices, nodes, torch::nullopt,
-      subgraph_reverse_edge_ids, subgraph_type_per_edge);
+      subgraph_reverse_edge_ids, subgraph_type_per_edge, sampling_prob);
 }
 
 c10::intrusive_ptr<FusedSampledSubgraph> FusedCSCSamplingGraph::SampleNeighbors(
     const torch::Tensor& nodes, const std::vector<int64_t>& fanouts,
-    bool replace, bool layer, bool return_eids,
+    bool replace, bool layer, bool bandit, bool return_eids,
     torch::optional<std::string> probs_name) const {
   torch::optional<torch::Tensor> probs_or_mask = torch::nullopt;
   if (probs_name.has_value() && !probs_name.value().empty()) {
@@ -552,13 +606,37 @@ c10::intrusive_ptr<FusedSampledSubgraph> FusedCSCSamplingGraph::SampleNeighbors(
   if (layer) {
     const int64_t random_seed = RandomEngine::ThreadLocal()->RandInt(
         static_cast<int64_t>(0), std::numeric_limits<int64_t>::max());
-    SamplerArgs<SamplerType::LABOR> args{indices_, random_seed, NumNodes()};
-    return SampleNeighborsImpl(
-        nodes, return_eids,
-        GetNumPickFn(fanouts, replace, type_per_edge_, probs_or_mask),
-        GetPickFn(
-            fanouts, replace, indptr_.options(), type_per_edge_, probs_or_mask,
-            args));
+    if (!bandit) {
+      SamplerArgs<SamplerType::LABOR> args{indices_, random_seed, NumNodes()};
+      return SampleNeighborsImpl(
+          nodes, return_eids,
+          GetNumPickFn(fanouts, replace, type_per_edge_, probs_or_mask),
+          GetPickFn(
+              fanouts, replace, indptr_.options(), type_per_edge_, probs_or_mask,
+              args));
+    }
+    else {
+      static int64_t iteration = 0;
+      SamplerArgs<SamplerType::BANDIT_LABOR> args{
+        indices_,
+        edge_attributes_.value().at("bandit_labor_loss").data_ptr<float>(),
+        node_attributes_.value().at("bandit_labor_x").data_ptr<float>(),
+        node_attributes_.value().at("bandit_labor_s").data_ptr<float>(),
+        nullptr,
+        node_attributes_.value().at("bandit_labor_last_iteration").data_ptr<int64_t>(),
+        ++iteration,
+        random_seed,
+        NumNodes(),
+        2 * 2.64f,
+        0.98
+      };
+      return SampleNeighborsImpl(
+          nodes, return_eids,
+          GetNumPickFn(fanouts, replace, type_per_edge_, probs_or_mask),
+          GetPickFn(
+              fanouts, replace, indptr_.options(), type_per_edge_, probs_or_mask,
+              args));
+    }
   } else {
     SamplerArgs<SamplerType::NEIGHBOR> args;
     return SampleNeighborsImpl(
@@ -593,6 +671,7 @@ BuildGraphFromSharedMemoryHelper(SharedMemoryHelper&& helper) {
   auto edge_type_to_id = DetensorizeDict(helper.ReadTorchTensorDict());
   auto node_attributes = helper.ReadTorchTensorDict();
   auto edge_attributes = helper.ReadTorchTensorDict();
+  auto node_attributes = helper.ReadTorchTensorDict();
   auto graph = c10::make_intrusive<FusedCSCSamplingGraph>(
       indptr.value(), indices.value(), node_type_offset, type_per_edge,
       node_type_to_id, edge_type_to_id, node_attributes, edge_attributes);
@@ -614,6 +693,7 @@ FusedCSCSamplingGraph::CopyToSharedMemory(
   helper.WriteTorchTensorDict(TensorizeDict(edge_type_to_id_));
   helper.WriteTorchTensorDict(node_attributes_);
   helper.WriteTorchTensorDict(edge_attributes_);
+  helper.WriteTorchTensorDict(node_attributes_);
   helper.Flush();
   return BuildGraphFromSharedMemoryHelper(std::move(helper));
 }
@@ -1037,6 +1117,23 @@ int64_t Pick(
   }
 }
 
+template <typename PickedType>
+int64_t Pick(
+    int64_t offset, int64_t num_neighbors, int64_t fanout, bool replace,
+    const torch::TensorOptions& options,
+    const torch::optional<torch::Tensor>& probs_or_mask,
+    SamplerArgs<SamplerType::BANDIT_LABOR> args, PickedType* picked_data_ptr) {
+  if (fanout == 0) return 0;
+  if (fanout < 0) {
+    return UniformPick(
+      offset, num_neighbors, fanout, replace, options, picked_data_ptr);
+  } else {
+    return BanditLaborPick<float>(
+        offset, num_neighbors, fanout, options, probs_or_mask, args,
+        picked_data_ptr);
+  }
+}
+
 template <typename T, typename U>
 inline void safe_divide(T& a, U b) {
   a = b > 0 ? (T)(a / b) : std::numeric_limits<T>::infinity();
@@ -1215,6 +1312,157 @@ inline int64_t LaborPick(
     const auto [rnd, j] = heap_data[i];
     if (!NonUniform || rnd < std::numeric_limits<float>::infinity()) {
       picked_data_ptr[num_sampled++] = offset + j;
+    }
+  }
+  return num_sampled;
+}
+
+/**
+ * @brief Perform uniform-nonuniform sampling of elements depending on the
+ * template parameter NonUniform and return the sampled indices.
+ *
+ * @param offset The starting edge ID for the connected neighbors of the sampled
+ * node.
+ * @param num_neighbors The number of neighbors to pick.
+ * @param fanout The number of edges to be sampled for each node. It should be
+ * >= 0 or -1.
+ *  - When the value is -1, all neighbors (with non-zero probability, if
+ * weighted) will be sampled once regardless of replacement. It is equivalent to
+ * selecting all neighbors with non-zero probability when the fanout is >= the
+ * number of neighbors (and replacement is set to false).
+ *  - When the value is a non-negative integer, it serves as a minimum
+ * threshold for selecting neighbors.
+ * @param options Tensor options specifying the desired data type of the result.
+ * @param probs_or_mask Optional tensor containing the (unnormalized)
+ * probabilities associated with each neighboring edge of a node in the original
+ * graph. It must be a 1D floating-point tensor with the number of elements
+ * equal to the number of edges in the graph.
+ * @param args Contains bandit-labor specific arguments.
+ * @param picked_data_ptr The destination address where the picked neighbors
+ * should be put. Enough memory space should be allocated in advance.
+ */
+template <typename ProbsType, typename PickedType, int StackSize>
+inline int64_t BanditLaborPick(
+    int64_t offset, int64_t num_neighbors, int64_t fanout,
+    const torch::TensorOptions& options,
+    const torch::optional<torch::Tensor>& probs_or_mask,
+    SamplerArgs<SamplerType::BANDIT_LABOR> args, PickedType* picked_data_ptr) {
+  fanout = std::min(fanout, num_neighbors);
+  if (fanout >= num_neighbors) {
+    std::iota(picked_data_ptr, picked_data_ptr + num_neighbors, offset);
+    std::fill_n(args.sampling_prob, num_neighbors, 1.f);
+    return num_neighbors;
+  }
+  // Assuming max_degree of a vertex is <= 4 billion.
+  std::array<std::pair<float, uint32_t>, StackSize> heap;
+  auto heap_data = heap.data();
+  torch::Tensor heap_tensor;
+  if (fanout > StackSize) {
+    constexpr int factor = sizeof(heap_data[0]) / sizeof(int32_t);
+    heap_tensor = torch::empty({fanout * factor}, torch::kInt32);
+    heap_data = reinterpret_cast<std::pair<float, uint32_t>*>(
+        heap_tensor.data_ptr<int32_t>());
+  }
+
+  const auto s = *args.s;
+  auto x = *args.x;
+  const auto eta = args.c / std::sqrt(s);
+
+  std::transform(args.loss, args.loss + num_neighbors, args.loss, [d=args.d](auto x) {
+    return x * d;
+  });
+
+  for (;;) {
+    const auto [w1, w2] = std::transform_reduce(args.loss, args.loss + num_neighbors,
+      std::make_pair(0.f, 0.f), [](auto a, auto b) {
+        return std::make_pair(a.first + b.first, a.second + b.second);
+      }, [&](auto l) {
+        auto t = eta * (l - x);
+        auto w = 4.f / (t * t);
+        return std::make_pair(w, w * std::sqrt(w));
+      });
+    x -= (w1 - 1.f) / (eta * w2);
+    if (std::abs(w1 - 1) < 1e9)
+      break;
+  }
+  *args.x = x;
+
+  std::array<float, StackSize> prob;
+  auto prob_data = prob.data();
+  torch::Tensor prob_tensor;
+  if (num_neighbors > StackSize) {
+    prob_tensor = torch::empty({num_neighbors}, torch::kFloat32);
+    prob_data = prob_tensor.data_ptr<float>();
+  }
+
+  float c = fanout;
+  double S = 0.f;
+
+  AT_DISPATCH_INTEGRAL_TYPES(
+      args.indices.scalar_type(), "BanditLaborPickMain", ([&] {
+        const scalar_t* local_indices_data =
+            args.indices.data_ptr<scalar_t>() + offset;
+        // [Algorithm]
+        // Use a max-heap to get rid of the big random numbers and filter the
+        // smallest fanout of them. Implements arXiv:2210.13339 Section A.3.
+        //
+        // [Complexity Analysis]
+        // the first for loop and std::make_heap runs in time O(fanouts).
+        // The next for loop compares each random number to the current
+        // minimum fanout numbers. For any given i, the probability that the
+        // current random number will replace any number in the heap is fanout
+        // / i. Summing from i=fanout to num_neighbors, we get f * (H_n -
+        // H_f), where n is num_neighbors and f is fanout, H_f is \sum_j=1^f
+        // 1/j. In the end H_n - H_f = O(log n/f), there are n - f iterations,
+        // each heap operation takes time log f, so the total complexity is
+        // O(f + (n - f)
+        // + f log(n/f) log f) = O(n + f log(f) log(n/f)). If f << n (f is a
+        // constant in almost all cases), then the average complexity is
+        // O(num_neighbors).
+        for (uint32_t i = 0; i < fanout; ++i) {
+          const auto t = local_indices_data[i];
+          auto rnd =
+              labor::uniform_random<float>(args.random_seed, t);  // r_t
+          const auto temp = eta * (args.loss[i] - x);
+          const auto w = 4.f / (temp * temp);
+          safe_divide(rnd, w); // r_t / \pi_t
+          heap_data[i] = std::make_pair(rnd, i);
+          prob_data[i] = w;
+          S += std::min(1.f, c * w);
+        }
+        if (fanout < num_neighbors) {
+          std::make_heap(heap_data, heap_data + fanout);
+        }
+        for (uint32_t i = fanout; i < num_neighbors; ++i) {
+          const auto t = local_indices_data[i];
+          auto rnd =
+              labor::uniform_random<float>(args.random_seed, t);  // r_t
+          const auto temp = eta * (args.loss[i] - x);
+          const auto w = 4.f / (temp * temp);
+          safe_divide(rnd, w); // r_t / \pi_t
+          prob_data[i] = w;
+          S += std::min(1.f, c * w);
+          if (rnd < heap_data[0].first) {
+            std::pop_heap(heap_data, heap_data + fanout);
+            heap_data[fanout - 1] = std::make_pair(rnd, i);
+            std::push_heap(heap_data, heap_data + fanout);
+          }
+        }
+      }
+    ));
+  while (std::min(S, 1.0 * fanout) / std::max(S, 1.0 * fanout) < 0.9999) {
+    c *= fanout / S;
+    S = std::transform_reduce(prob_data, prob_data + num_neighbors, 0.0,
+      std::plus{}, [&](auto w) {
+      return std::min(1.f, c * w);
+    });
+  }
+  int64_t num_sampled = 0;
+  for (int64_t i = 0; i < fanout; ++i) {
+    const auto [rnd, j] = heap_data[i];
+    if (rnd < std::numeric_limits<float>::infinity()) {
+      picked_data_ptr[num_sampled] = offset + j;
+      args.sampling_prob[num_sampled++] = std::min(1.f, prob_data[j] * c);
     }
   }
   return num_sampled;
