@@ -34,9 +34,9 @@ struct SamplerArgs<SamplerType::LABOR> {
 template <>
 struct SamplerArgs<SamplerType::BANDIT_LABOR> {
   const torch::Tensor& indices;
-  float* loss;
-  float* x;
-  float* s;
+  double* loss;
+  double* x;
+  double* s;
   float* sampling_prob;
   int64_t* last_iteration;
   int64_t iteration;

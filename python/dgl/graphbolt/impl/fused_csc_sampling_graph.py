@@ -853,6 +853,8 @@ class FusedCSCSamplingGraph(SamplingGraph):
         self,
         nodes: Union[torch.Tensor, Dict[str, torch.Tensor]],
         fanouts: torch.Tensor,
+        replace: bool = False,
+        probs_name: Optional[str] = None,
         deduplicate=True,
     ) -> Union[FusedSampledSubgraphImpl, SampledSubgraphImpl]:
         """Sample neighboring edges of the given nodes and return the induced
@@ -928,13 +930,17 @@ class FusedCSCSamplingGraph(SamplingGraph):
             self.edge_attributes is not None
             and ORIGINAL_EDGE_ID in self.edge_attributes
         )
+        if self.edge_attributes is None:
+            self.edge_attributes = {}
+        if self.node_attributes is None:
+            self.node_attributes = {}
         if "bandit_labor_loss" not in self.edge_attributes:
             eattr = self.edge_attributes
             nattr = self.node_attributes
-            eattr["bandit_labor_loss"] = torch.zeros(self.total_num_edges, dtype=torch.float, device=self.indices.device)
-            nattr["bandit_labor_x"] = -torch.ones(self.total_num_nodes, dtype=torch.float, device=self.indptr.device)
-            nattr["bandit_labor_s"] = torch.zeros(self.total_num_nodes, dtype=torch.float, device=self.indptr.device)
-            nattr["bandit_labor_last_iteration"] = torch.zeros(self.total_num_nodes, dtype=torch.int64, device=self.indptr.device)
+            eattr["bandit_labor_loss"] = torch.zeros(self.total_num_edges, dtype=torch.double, device=self.indices.device)
+            nattr["bandit_labor_x"] = -torch.ones(self.total_num_nodes, dtype=torch.double, device=self.csc_indptr.device)
+            nattr["bandit_labor_s"] = torch.zeros(self.total_num_nodes, dtype=torch.double, device=self.csc_indptr.device)
+            nattr["bandit_labor_last_iteration"] = torch.zeros(self.total_num_nodes, dtype=torch.int64, device=self.csc_indptr.device)
             self.edge_attributes = eattr
             self.node_attributes = nattr
         C_sampled_subgraph = self._c_csc_graph.sample_neighbors(

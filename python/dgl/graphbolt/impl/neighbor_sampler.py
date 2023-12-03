@@ -366,3 +366,7 @@ class BanditLayerNeighborSampler(NeighborSampler):
             datapipe, graph, fanouts, False, None, deduplicate
         )
         self.sampler = graph.sample_bandit_layer_neighbors
+        self.max_loss = torch.zeros(graph.total_num_nodes, dtype=torch.double, device=graph.csc_indptr.device)
+
+    def provide_feedback(self, sampled_subgraph, weights):
+        pass

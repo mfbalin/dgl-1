@@ -424,9 +424,8 @@ auto GetPickFn(
       nargs.s += nid;
       nargs.sampling_prob = sampling_prob_ptr + picked_offset;
       nargs.last_iteration += nid;
-      const auto num_iters = nargs.iteration - *nargs.last_iteration;
-      nargs.d = std::pow(nargs.d, num_iters);
-      *nargs.s = *nargs.s * nargs.d + 1.f;
+      nargs.d = std::pow(nargs.d, nargs.iteration - *nargs.last_iteration);
+      *nargs.s = *nargs.s * nargs.d + 1.;
     }
     // If fanouts.size() > 1, perform sampling for each edge type of each
     // node; otherwise just sample once for each node with no regard of edge
@@ -619,9 +618,9 @@ c10::intrusive_ptr<FusedSampledSubgraph> FusedCSCSamplingGraph::SampleNeighbors(
       static int64_t iteration = 0;
       SamplerArgs<SamplerType::BANDIT_LABOR> args{
         indices_,
-        edge_attributes_.value().at("bandit_labor_loss").data_ptr<float>(),
-        node_attributes_.value().at("bandit_labor_x").data_ptr<float>(),
-        node_attributes_.value().at("bandit_labor_s").data_ptr<float>(),
+        edge_attributes_.value().at("bandit_labor_loss").data_ptr<double>(),
+        node_attributes_.value().at("bandit_labor_x").data_ptr<double>(),
+        node_attributes_.value().at("bandit_labor_s").data_ptr<double>(),
         nullptr,
         node_attributes_.value().at("bandit_labor_last_iteration").data_ptr<int64_t>(),
         ++iteration,
@@ -1364,28 +1363,34 @@ inline int64_t BanditLaborPick(
         heap_tensor.data_ptr<int32_t>());
   }
 
+  double min_loss = 0.;
+  std::transform(args.loss, args.loss + num_neighbors, args.loss, [d=args.d, &min_loss](auto x) {
+    const auto t = x * d;
+    min_loss = std::min(min_loss, t);
+    return t;
+  });
+
   const auto s = *args.s;
   auto x = *args.x;
   const auto eta = args.c / std::sqrt(s);
 
-  std::transform(args.loss, args.loss + num_neighbors, args.loss, [d=args.d](auto x) {
-    return x * d;
-  });
-
   for (;;) {
+    if (x >= min_loss)
+      x = min_loss - 1;
     const auto [w1, w2] = std::transform_reduce(args.loss, args.loss + num_neighbors,
-      std::make_pair(0.f, 0.f), [](auto a, auto b) {
+      std::make_pair(0., 0.), [](auto a, auto b) {
         return std::make_pair(a.first + b.first, a.second + b.second);
       }, [&](auto l) {
         auto t = eta * (l - x);
-        auto w = 4.f / (t * t);
+        auto w = 4. / (t * t);
         return std::make_pair(w, w * std::sqrt(w));
       });
-    x -= (w1 - 1.f) / (eta * w2);
-    if (std::abs(w1 - 1) < 1e9)
+    x -= (w1 - 1.) / (eta * w2);
+    if (std::abs(w1 - 1.) < 1e-6) {
+      *args.x = x;
       break;
+    }
   }
-  *args.x = x;
 
   std::array<float, StackSize> prob;
   auto prob_data = prob.data();
@@ -1395,8 +1400,7 @@ inline int64_t BanditLaborPick(
     prob_data = prob_tensor.data_ptr<float>();
   }
 
-  float c = fanout;
-  double S = 0.f;
+  double c = fanout, S = 0;
 
   AT_DISPATCH_INTEGRAL_TYPES(
       args.indices.scalar_type(), "BanditLaborPickMain", ([&] {
@@ -1424,11 +1428,11 @@ inline int64_t BanditLaborPick(
           auto rnd =
               labor::uniform_random<float>(args.random_seed, t);  // r_t
           const auto temp = eta * (args.loss[i] - x);
-          const auto w = 4.f / (temp * temp);
+          const auto w = 4. / (temp * temp);
           safe_divide(rnd, w); // r_t / \pi_t
           heap_data[i] = std::make_pair(rnd, i);
           prob_data[i] = w;
-          S += std::min(1.f, c * w);
+          S += std::min(1., c * w);
         }
         if (fanout < num_neighbors) {
           std::make_heap(heap_data, heap_data + fanout);
@@ -1438,10 +1442,10 @@ inline int64_t BanditLaborPick(
           auto rnd =
               labor::uniform_random<float>(args.random_seed, t);  // r_t
           const auto temp = eta * (args.loss[i] - x);
-          const auto w = 4.f / (temp * temp);
+          const auto w = 4. / (temp * temp);
           safe_divide(rnd, w); // r_t / \pi_t
           prob_data[i] = w;
-          S += std::min(1.f, c * w);
+          S += std::min(1., c * w);
           if (rnd < heap_data[0].first) {
             std::pop_heap(heap_data, heap_data + fanout);
             heap_data[fanout - 1] = std::make_pair(rnd, i);
@@ -1450,11 +1454,11 @@ inline int64_t BanditLaborPick(
         }
       }
     ));
-  while (std::min(S, 1.0 * fanout) / std::max(S, 1.0 * fanout) < 0.9999) {
+  while (S < 0.99999 * fanout) {
     c *= fanout / S;
-    S = std::transform_reduce(prob_data, prob_data + num_neighbors, 0.0,
+    S = std::transform_reduce(prob_data, prob_data + num_neighbors, 0.,
       std::plus{}, [&](auto w) {
-      return std::min(1.f, c * w);
+      return std::min(1., c * w);
     });
   }
   int64_t num_sampled = 0;
@@ -1462,7 +1466,7 @@ inline int64_t BanditLaborPick(
     const auto [rnd, j] = heap_data[i];
     if (rnd < std::numeric_limits<float>::infinity()) {
       picked_data_ptr[num_sampled] = offset + j;
-      args.sampling_prob[num_sampled++] = std::min(1.f, prob_data[j] * c);
+      args.sampling_prob[num_sampled++] = std::min(1., prob_data[j] * c);
     }
   }
   return num_sampled;
