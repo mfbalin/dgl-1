@@ -1374,9 +1374,7 @@ inline int64_t BanditLaborPick(
   auto x = *args.x;
   const auto eta = args.c / std::sqrt(s);
 
-  for (;;) {
-    if (x >= min_loss)
-      x = min_loss - 1;
+  for (int z = 0;; z++) {
     const auto [w1, w2] = std::transform_reduce(args.loss, args.loss + num_neighbors,
       std::make_pair(0., 0.), [](auto a, auto b) {
         return std::make_pair(a.first + b.first, a.second + b.second);
@@ -1389,6 +1387,12 @@ inline int64_t BanditLaborPick(
     if (std::abs(w1 - 1.) < 1e-6) {
       *args.x = x;
       break;
+    }
+    else {
+      if (z > 2)
+        std::cerr << z << ' ' << x << ' ' << w1 << std::endl;
+      if (z > 100)
+        return 0;
     }
   }
 

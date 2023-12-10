@@ -3,11 +3,14 @@
 import torch
 from torch.utils.data import functional_datapipe
 
+import dgl
+
 from ..internal import (
     compact_csc_format,
     unique_and_compact_csc_formats,
     unique_and_compact_node_pairs,
 )
+from ..base import ORIGINAL_EDGE_ID
 
 from ..subgraph_sampler import SubgraphSampler
 from .sampled_subgraph_impl import FusedSampledSubgraphImpl, SampledSubgraphImpl
@@ -147,6 +150,7 @@ class NeighborSampler(SubgraphSampler):
                         original_column_node_ids=seeds,
                         original_row_node_ids=original_row_node_ids,
                         original_edge_ids=subgraph.original_edge_ids,
+                        sampling_probs=subgraph.sampling_probs,
                     )
                 else:
                     (
@@ -160,6 +164,7 @@ class NeighborSampler(SubgraphSampler):
                         original_column_node_ids=seeds,
                         original_row_node_ids=original_row_node_ids,
                         original_edge_ids=subgraph.original_edge_ids,
+                        sampling_probs=subgraph.sampling_probs,
                     )
             else:
                 (
@@ -175,6 +180,7 @@ class NeighborSampler(SubgraphSampler):
                     original_column_node_ids=seeds,
                     original_row_node_ids=original_row_node_ids,
                     original_edge_ids=subgraph.original_edge_ids,
+                    sampling_probs=subgraph.sampling_probs,
                 )
             subgraphs.insert(0, subgraph)
             seeds = original_row_node_ids
@@ -365,8 +371,47 @@ class BanditLayerNeighborSampler(NeighborSampler):
         super().__init__(
             datapipe, graph, fanouts, False, None, deduplicate
         )
+        eattr = graph.edge_attributes
+        eattr[ORIGINAL_EDGE_ID] = torch.arange(graph.total_num_edges, dtype=graph.csc_indptr.dtype, device=graph.indices.device)
+        graph.edge_attributes = eattr
+        self.graph = graph
         self.sampler = graph.sample_bandit_layer_neighbors
         self.max_loss = torch.zeros(graph.total_num_nodes, dtype=torch.double, device=graph.csc_indptr.device)
 
-    def provide_feedback(self, sampled_subgraph, weights):
-        pass
+    def provide_feedback(self, batch):
+        with torch.no_grad():
+            for block in batch.blocks:
+                a = block.edata["~a"]
+                p = block.edata["sampling_probs"]
+                loss = p / torch.square(a.flatten())
+                block.edata["loss"] = loss
+                block.update_all(dgl.function.copy_e('loss', 'm'), dgl.function.max('m', 'max_loss'))
+                max_loss = block.dstdata["max_loss"]
+                eid = block.edata[dgl.EID]
+                dst_nodes = block.dstdata[dgl.NID]
+                current_max_loss = self.max_loss[dst_nodes.to(self.max_loss.device)].to(max_loss.device)
+                adjustment_ratio = torch.minimum(current_max_loss, max_loss) / max_loss
+                new_max_loss = torch.maximum(current_max_loss, max_loss)
+                self.max_loss[dst_nodes.to(self.max_loss.device)] = new_max_loss.to(self.max_loss.device)
+                t = dst_nodes.to(self.graph.csc_indptr.device)
+                degrees = torch.empty(dst_nodes.shape[0] + 1, dtype=self.graph.csc_indptr.dtype, device=dst_nodes.device)
+                g_indptr = self.graph.csc_indptr[t].to(degrees.device)
+                degrees[1:] = self.graph.csc_indptr[t + 1].to(degrees.device) - g_indptr
+                degrees[0] -= degrees[0]
+                subindptr = torch.cumsum(degrees, 0)
+                num_edges = subindptr[-1].item()
+                i = torch.arange(num_edges, device=subindptr.device)
+                dst_local = torch.searchsorted(subindptr, i, right=True) - 1
+                src = i - subindptr[dst_local] + g_indptr[dst_local]
+                ratio_edges = adjustment_ratio[dst_local]
+                device = self.graph.edge_attributes["bandit_labor_loss"].device
+                src = src.to(device)
+                self.graph.edge_attributes["bandit_labor_loss"][src] = self.graph.edge_attributes["bandit_labor_loss"][src] * ratio_edges.to(device)
+                src = self.graph.indices[eid.to(self.graph.indices.device)]
+                block.dstdata["max_loss"] = new_max_loss
+                block.apply_edges(dgl.function.e_div_v('loss', 'max_loss', 'norm_loss'))
+                self.graph.edge_attributes["bandit_labor_loss"][src] += block.edata['norm_loss'].to(device)
+                print(loss.shape, p, a)
+                print(src.shape, self.graph.edge_attributes["bandit_labor_loss"][src])
+
+

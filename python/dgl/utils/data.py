@@ -193,7 +193,10 @@ def graphdata2tensors(data, idtype=None, bipartite=False, **kwargs):
             )
         num_src, num_dst = infer_num_nodes(data, bipartite=bipartite)
     elif isinstance(data, list):
-        src, dst = elist2tensor(data, idtype)
+        if len(data) == 2 and all(F.is_tensor(t) for t in data):
+            src, dst = data[0], data[1]
+        else:
+            src, dst = elist2tensor(data, idtype)
         data = SparseAdjTuple("coo", (src, dst))
         num_src, num_dst = infer_num_nodes(data, bipartite=bipartite)
     elif isinstance(data, sp.sparse.spmatrix):

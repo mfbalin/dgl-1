@@ -43,7 +43,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from pytorch_lightning import LightningDataModule, LightningModule, Trainer
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, Callback
 from torchmetrics import Accuracy
 
 from dgl import function as fn
@@ -352,7 +352,6 @@ class GATv2Conv(nn.Module):
                 (e * self.attn).sum(dim=-1).unsqueeze(dim=2)
             )  # (num_edge, num_heads, 1)
             # compute softmax
-            graph.edata["~a"] = torch.exp(e.double())
             graph.edata["a"] = self.attn_drop(
                 edge_softmax(graph, e)
             )  # (num_edge, num_heads)
@@ -369,10 +368,9 @@ class GATv2Conv(nn.Module):
             if self.activation:
                 rst = self.activation(rst)
 
-            if get_attention:
-                return rst, graph.edata["~a"]
-            else:
-                return rst
+        if get_attention:
+            graph.edata["~a"] = torch.exp(e.double())
+        return rst
 
 
 class GATv2(LightningModule):
@@ -390,9 +388,9 @@ class GATv2(LightningModule):
                     feat_drop,
                     attn_drop,
                     negative_slope,
-                    True,
+                    residual,
                     activation,
-                    allow_zero_in_degree=False,
+                    allow_zero_in_degree=True,
                     bias=True,
                     share_weights=False,
                 )
@@ -406,11 +404,9 @@ class GATv2(LightningModule):
 
     def forward(self, blocks, x):
         h = x
-        attention_values = []
         for layer, block in zip(self.layers, blocks):
-            h, a = layer(block, h, get_attention=True).flatten(1)
-            attention_values.append(a)
-        return self.final_layer(h), attention_values
+            h = layer(block, h, get_attention=True).flatten(1)
+        return self.final_layer(h)
 
     def log_node_and_edge_counts(self, blocks):
         node_counts = [block.num_src_nodes() for block in blocks] + [
@@ -435,11 +431,10 @@ class GATv2(LightningModule):
                 )
 
     def training_step(self, batch, batch_idx):
-        blocks = [block.to("cuda") for block in batch.blocks]
+        batch.blocks = [block.to("cuda") for block in batch.blocks]
         x = batch.node_features["feat"]
         y = batch.labels.to("cuda")
-        y_hat, attention_values = self(blocks, x)
-        
+        y_hat = self(batch.blocks, x)
         loss = F.cross_entropy(y_hat, y)
         self.train_acc(torch.argmax(y_hat, 1), y)
         self.log(
@@ -449,14 +444,14 @@ class GATv2(LightningModule):
             on_step=True,
             on_epoch=False,
         )
-        self.log_node_and_edge_counts(blocks)
+        self.log_node_and_edge_counts(batch.blocks)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        blocks = [block.to("cuda") for block in batch.blocks]
+        batch.blocks = [block.to("cuda") for block in batch.blocks]
         x = batch.node_features["feat"]
         y = batch.labels.to("cuda")
-        y_hat, attention_values = self(blocks, x)
+        y_hat = self(batch.blocks, x)
         self.val_acc(torch.argmax(y_hat, 1), y)
         self.log(
             "val_acc",
@@ -466,7 +461,7 @@ class GATv2(LightningModule):
             on_epoch=True,
             sync_dist=True,
         )
-        self.log_node_and_edge_counts(blocks)
+        self.log_node_and_edge_counts(batch.blocks)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
@@ -474,6 +469,12 @@ class GATv2(LightningModule):
         )
         return optimizer
 
+class BanditFeedbackCallback(Callback):
+    def __init__(self):
+        super().__init__()
+    
+    def on_train_batch_end(self, trainer, datamodule, outputs, batch, batch_idx):
+        trainer.datamodule.sampler.provide_feedback(batch)
 
 class DataModule(LightningDataModule):
     def __init__(self, dataset, fanouts, batch_size, num_workers, bandit):
@@ -497,6 +498,8 @@ class DataModule(LightningDataModule):
         )
         sampler = datapipe.sample_bandit_layer_neighbor if self.bandit else datapipe.sample_layer_neighbor
         datapipe = sampler(self.graph, self.fanouts)
+        if self.bandit:
+            self.sampler = datapipe
         datapipe = datapipe.fetch_feature(self.feature_store, ["feat"])
         datapipe = datapipe.to_dgl()
         dataloader = gb.MultiProcessDataLoader(
@@ -568,7 +571,7 @@ if __name__ == "__main__":
         0,
         0,
         0.2,
-        False
+        True
     )
 
     # Train.
@@ -584,6 +587,6 @@ if __name__ == "__main__":
         accelerator="gpu",
         devices=args.num_gpus,
         max_epochs=args.epochs,
-        callbacks=[checkpoint_callback, early_stopping_callback],
+        callbacks=[checkpoint_callback, early_stopping_callback] + ([BanditFeedbackCallback()] if args.bandit else []),
     )
     trainer.fit(model, datamodule=datamodule)

@@ -47,6 +47,7 @@ class FusedSampledSubgraphImpl(SampledSubgraph):
     ] = None
     original_row_node_ids: Union[Dict[str, torch.Tensor], torch.Tensor] = None
     original_edge_ids: Union[Dict[str, torch.Tensor], torch.Tensor] = None
+    sampling_probs: Union[Dict[str, torch.Tensor], torch.Tensor] = None
 
     def __post_init__(self):
         if isinstance(self.node_pairs, dict):
@@ -109,6 +110,7 @@ class SampledSubgraphImpl(SampledSubgraph):
     ] = None
     original_row_node_ids: Union[Dict[str, torch.Tensor], torch.Tensor] = None
     original_edge_ids: Union[Dict[str, torch.Tensor], torch.Tensor] = None
+    sampling_probs: Union[Dict[str, torch.Tensor], torch.Tensor] = None
 
     def __post_init__(self):
         if isinstance(self.node_pairs, dict):

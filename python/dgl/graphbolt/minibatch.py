@@ -433,6 +433,9 @@ class MiniBatch:
                     num_dst_nodes=num_dst_nodes,
                 )
             )
+            blocks[-1].edata["sampling_probs"] = subgraph.sampling_probs
+            blocks[-1].dstdata[dgl.NID] = original_column_node_ids
+            blocks[-1].srcdata[dgl.NID] = original_row_node_ids
 
         if is_heterogeneous:
             # Assign reverse node ids to the outermost layer's source nodes.

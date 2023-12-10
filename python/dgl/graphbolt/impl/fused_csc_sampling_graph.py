@@ -457,7 +457,7 @@ class FusedCSCSamplingGraph(SamplingGraph):
             if has_original_eids:
                 original_edge_ids = original_hetero_edge_ids
         return FusedSampledSubgraphImpl(
-            node_pairs=node_pairs, original_edge_ids=original_edge_ids
+            node_pairs=node_pairs, original_edge_ids=original_edge_ids, sampling_probs=C_sampled_subgraph.sampling_probs
         )
 
     def _convert_to_homogeneous_nodes(self, nodes):
