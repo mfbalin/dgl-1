@@ -199,13 +199,6 @@ void FusedCSCSamplingGraph::Save(
     archive.write(
         "FusedCSCSamplingGraph/edge_attributes", edge_attributes_.value());
   }
-  archive.write(
-      "FusedCSCSamplingGraph/has_node_attributes",
-      node_attributes_.has_value());
-  if (node_attributes_) {
-    archive.write(
-        "FusedCSCSamplingGraph/node_attributes", node_attributes_.value());
-  }
 }
 
 void FusedCSCSamplingGraph::SetState(
