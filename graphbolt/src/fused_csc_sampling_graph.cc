@@ -233,9 +233,6 @@ void FusedCSCSamplingGraph::SetState(
   if (state.find("edge_attributes") != state.end()) {
     edge_attributes_ = state.at("edge_attributes");
   }
-  if (state.find("node_attributes") != state.end()) {
-    node_attributes_ = state.at("node_attributes");
-  }
 }
 
 torch::Dict<std::string, torch::Dict<std::string, torch::Tensor>>
@@ -268,9 +265,6 @@ FusedCSCSamplingGraph::GetState() const {
   }
   if (edge_attributes_.has_value()) {
     state.insert("edge_attributes", edge_attributes_.value());
-  }
-  if (node_attributes_.has_value()) {
-    state.insert("node_attributes", node_attributes_.value());
   }
   return state;
 }
