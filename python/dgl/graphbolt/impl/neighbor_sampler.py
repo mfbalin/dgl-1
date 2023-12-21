@@ -383,9 +383,11 @@ class BanditLayerNeighborSampler(NeighborSampler):
     def provide_feedback(self, batch):
         with torch.no_grad():
             for block in batch.blocks2:
-                a = block.edata["~a"]
-                p = block.edata["sampling_probs"]
-                loss = p / torch.square(a.flatten())
+                block.update_all(dgl.function.copy_e('sampling_probs', 'm'), dgl.function.sum('m', 'prob_sum'))
+                block.apply_edges(dgl.function.e_mul_v('a', 'prob_sum', '~a'))
+                a = block.edata["~a"].double()
+                p = block.edata["sampling_probs"].double()
+                loss = (p / torch.square(a.flatten())).clip(max=1000)
                 block.edata["loss"] = loss
                 block.update_all(dgl.function.copy_e('loss', 'm'), dgl.function.max('m', 'max_loss'))
                 max_loss = block.dstdata["max_loss"]
@@ -413,7 +415,5 @@ class BanditLayerNeighborSampler(NeighborSampler):
                 block.dstdata["max_loss"] = new_max_loss
                 block.apply_edges(dgl.function.e_div_v('loss', 'max_loss', 'norm_loss'))
                 self.graph.edge_attributes["bandit_labor_loss"][src] += block.edata['norm_loss'].to(device)
-                print(loss.shape, p, a)
-                print(src.shape, self.graph.edge_attributes["bandit_labor_loss"][src])
 
 

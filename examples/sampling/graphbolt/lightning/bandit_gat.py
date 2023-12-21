@@ -291,9 +291,6 @@ class GATv2Conv(nn.Module):
         torch.Tensor
             The output feature of shape :math:`(N, H, D_{out})` where :math:`H`
             is the number of heads, and :math:`D_{out}` is size of output feature.
-        torch.Tensor, optional
-            The attention values of shape :math:`(E, H, 1)`, where :math:`E` is the number of
-            edges. This is returned only when :attr:`get_attention` is ``True``.
 
         Raises
         ------
@@ -352,9 +349,10 @@ class GATv2Conv(nn.Module):
                 (e * self.attn).sum(dim=-1).unsqueeze(dim=2)
             )  # (num_edge, num_heads, 1)
             # compute softmax
-            graph.edata["a"] = self.attn_drop(
+            e = self.attn_drop(
                 edge_softmax(graph, e)
             )  # (num_edge, num_heads)
+            graph.edata["a"] = e
             # message passing
             graph.update_all(fn.u_mul_e("el", "a", "m"), fn.sum("m", "ft"))
             rst = graph.dstdata["ft"]
@@ -369,7 +367,7 @@ class GATv2Conv(nn.Module):
                 rst = self.activation(rst)
 
         if get_attention:
-            graph.edata["~a"] = torch.exp(e.double())
+            graph.edata["a"] = e
         return rst
 
 

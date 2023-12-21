@@ -1333,6 +1333,7 @@ inline int64_t BanditLaborPick(
 
   const auto s = *args.s;
   auto x = *args.x;
+  x = -1;
   const auto eta = args.c / std::sqrt(s);
 
   for (int z = 0;; z++) {
@@ -1350,12 +1351,17 @@ inline int64_t BanditLaborPick(
       break;
     }
     else {
-      if (z > 6)
-        std::cerr << z << ' ' << x << ' ' << w1 << std::endl;
-      if (z > 100)
+      if (z > 100) {
+        for (auto i = args.loss; i < args.loss + num_neighbors; i++)
+          std::cerr << *i << ' ';
+        std::cerr << "\nx: " << x << ", exiting!" << std::endl;
         return 0;
+      }
     }
   }
+
+  if (std::isnan(x))
+    std::cerr << "computed x is nan\n";
 
   std::array<float, StackSize> prob;
   auto prob_data = prob.data();
