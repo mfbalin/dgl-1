@@ -102,11 +102,6 @@ c10::intrusive_ptr<FusedCSCSamplingGraph> FusedCSCSamplingGraph::Create(
       TORCH_CHECK(pair.value().size(0) == indices.size(0));
     }
   }
-  if (node_attributes.has_value()) {
-    for (const auto& pair : node_attributes.value()) {
-      TORCH_CHECK(pair.value().size(0) == indptr.size(0) - 1);
-    }
-  }
   return c10::make_intrusive<FusedCSCSamplingGraph>(
       indptr, indices, node_type_offset, type_per_edge, node_type_to_id,
       edge_type_to_id, node_attributes, edge_attributes);
