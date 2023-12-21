@@ -1350,7 +1350,7 @@ inline int64_t BanditLaborPick(
       break;
     }
     else {
-      if (z > 2)
+      if (z > 6)
         std::cerr << z << ' ' << x << ' ' << w1 << std::endl;
       if (z > 100)
         return 0;

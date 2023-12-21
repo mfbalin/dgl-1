@@ -367,9 +367,11 @@ class BanditLayerNeighborSampler(NeighborSampler):
         graph,
         fanouts,
         deduplicate=True,
+        # TODO: clean up once the migration is done.
+        output_cscformat=False,
     ):
         super().__init__(
-            datapipe, graph, fanouts, False, None, deduplicate
+            datapipe, graph, fanouts, False, None, deduplicate, output_cscformat
         )
         eattr = graph.edge_attributes
         eattr[ORIGINAL_EDGE_ID] = torch.arange(graph.total_num_edges, dtype=graph.csc_indptr.dtype, device=graph.indices.device)
