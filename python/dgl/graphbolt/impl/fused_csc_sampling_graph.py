@@ -314,33 +314,12 @@ class FusedCSCSamplingGraph(SamplingGraph):
         """
         return self._c_csc_graph.edge_attributes()
 
-    @property
-    def node_attributes(self) -> Optional[Dict[str, torch.Tensor]]:
-        """Returns the node attributes dictionary.
-
-        Returns
-        -------
-        torch.Tensor or None
-            If present, returns a dictionary of node attributes. Each key
-            represents the attribute's name, while the corresponding value
-            holds the attribute's specific value. The length of each value
-            should match the total number of nodes."
-        """
-        return self._c_csc_graph.node_attributes()
-
     @edge_attributes.setter
     def edge_attributes(
         self, edge_attributes: Optional[Dict[str, torch.Tensor]]
     ) -> None:
         """Sets the edge attributes dictionary."""
         self._c_csc_graph.set_edge_attributes(edge_attributes)
-    
-    @node_attributes.setter
-    def node_attributes(
-        self, node_attributes: Optional[Dict[str, torch.Tensor]]
-    ) -> None:
-        """Sets the edge attributes dictionary."""
-        self._c_csc_graph.set_node_attributes(node_attributes)
 
     def in_subgraph(
         self,

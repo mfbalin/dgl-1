@@ -672,7 +672,6 @@ FusedCSCSamplingGraph::CopyToSharedMemory(
   helper.WriteTorchTensorDict(TensorizeDict(edge_type_to_id_));
   helper.WriteTorchTensorDict(node_attributes_);
   helper.WriteTorchTensorDict(edge_attributes_);
-  helper.WriteTorchTensorDict(node_attributes_);
   helper.Flush();
   return BuildGraphFromSharedMemoryHelper(std::move(helper));
 }

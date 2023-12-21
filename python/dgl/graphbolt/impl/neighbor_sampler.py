@@ -380,7 +380,7 @@ class BanditLayerNeighborSampler(NeighborSampler):
 
     def provide_feedback(self, batch):
         with torch.no_grad():
-            for block in batch.blocks:
+            for block in batch.blocks2:
                 a = block.edata["~a"]
                 p = block.edata["sampling_probs"]
                 loss = p / torch.square(a.flatten())
