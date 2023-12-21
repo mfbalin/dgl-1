@@ -155,25 +155,6 @@ void FusedCSCSamplingGraph::Load(torch::serialize::InputArchive& archive) {
     edge_attributes_ = read_from_archive<EdgeAttrMap>(
         archive, "FusedCSCSamplingGraph/edge_attributes");
   }
-
-  // Optional node attributes.
-  torch::IValue has_node_attributes;
-  if (archive.try_read(
-          "FusedCSCSamplingGraph/has_node_attributes", has_node_attributes) &&
-      has_node_attributes.toBool()) {
-    torch::Dict<torch::IValue, torch::IValue> generic_dict =
-        read_from_archive(archive, "FusedCSCSamplingGraph/node_attributes")
-            .toGenericDict();
-    EdgeAttrMap target_dict;
-    for (const auto& pair : generic_dict) {
-      std::string key = pair.key().toStringRef();
-      torch::Tensor value = pair.value().toTensor();
-      // Use move to avoid copy.
-      target_dict.insert(std::move(key), std::move(value));
-    }
-    // Same as above.
-    node_attributes_ = std::move(target_dict);
-  }
 }
 
 void FusedCSCSamplingGraph::Save(
@@ -670,7 +651,6 @@ BuildGraphFromSharedMemoryHelper(SharedMemoryHelper&& helper) {
   auto edge_type_to_id = DetensorizeDict(helper.ReadTorchTensorDict());
   auto node_attributes = helper.ReadTorchTensorDict();
   auto edge_attributes = helper.ReadTorchTensorDict();
-  auto node_attributes = helper.ReadTorchTensorDict();
   auto graph = c10::make_intrusive<FusedCSCSamplingGraph>(
       indptr.value(), indices.value(), node_type_offset, type_per_edge,
       node_type_to_id, edge_type_to_id, node_attributes, edge_attributes);
