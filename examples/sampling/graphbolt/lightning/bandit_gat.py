@@ -431,10 +431,10 @@ class GATv2(LightningModule):
                 )
 
     def training_step(self, batch, batch_idx):
-        batch.blocks = [block.to("cuda") for block in batch.blocks]
+        batch.blocks2 = [block.to("cuda") for block in batch.blocks]
         x = batch.node_features["feat"]
         y = batch.labels.to("cuda")
-        y_hat = self(batch.blocks, x)
+        y_hat = self(batch.blocks2, x)
         loss = F.cross_entropy(y_hat, y)
         self.train_acc(torch.argmax(y_hat, 1), y)
         self.log(
@@ -444,14 +444,14 @@ class GATv2(LightningModule):
             on_step=True,
             on_epoch=False,
         )
-        self.log_node_and_edge_counts(batch.blocks)
+        self.log_node_and_edge_counts(batch.blocks2)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        batch.blocks = [block.to("cuda") for block in batch.blocks]
+        batch.blocks2 = [block.to("cuda") for block in batch.blocks]
         x = batch.node_features["feat"]
         y = batch.labels.to("cuda")
-        y_hat = self(batch.blocks, x)
+        y_hat = self(batch.blocks2, x)
         self.val_acc(torch.argmax(y_hat, 1), y)
         self.log(
             "val_acc",
@@ -461,7 +461,7 @@ class GATv2(LightningModule):
             on_epoch=True,
             sync_dist=True,
         )
-        self.log_node_and_edge_counts(batch.blocks)
+        self.log_node_and_edge_counts(batch.blocks2)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
@@ -501,10 +501,7 @@ class DataModule(LightningDataModule):
         if self.bandit:
             self.sampler = datapipe
         datapipe = datapipe.fetch_feature(self.feature_store, ["feat"])
-        datapipe = datapipe.to_dgl()
-        dataloader = gb.MultiProcessDataLoader(
-            datapipe, num_workers=self.num_workers
-        )
+        dataloader = gb.DataLoader(datapipe, num_workers=self.num_workers)
         return dataloader
 
     ########################################################################
