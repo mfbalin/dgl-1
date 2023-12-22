@@ -915,14 +915,14 @@ class FusedCSCSamplingGraph(SamplingGraph):
         if self.node_attributes is None:
             self.node_attributes = {}
         if "bandit_labor_loss" not in self.edge_attributes:
-            eattr = self.edge_attributes
             nattr = self.node_attributes
+            eattr = self.edge_attributes
             eattr["bandit_labor_loss"] = torch.zeros(self.total_num_edges, dtype=torch.double, device=self.indices.device)
             nattr["bandit_labor_x"] = -torch.ones(self.total_num_nodes, dtype=torch.double, device=self.csc_indptr.device)
             nattr["bandit_labor_s"] = torch.zeros(self.total_num_nodes, dtype=torch.double, device=self.csc_indptr.device)
             nattr["bandit_labor_last_iteration"] = torch.zeros(self.total_num_nodes, dtype=torch.int64, device=self.csc_indptr.device)
-            self.edge_attributes = eattr
             self.node_attributes = nattr
+            self.edge_attributes = eattr
         C_sampled_subgraph = self._c_csc_graph.sample_neighbors(
             nodes,
             fanouts.tolist(),

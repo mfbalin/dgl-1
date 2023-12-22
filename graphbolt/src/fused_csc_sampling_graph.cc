@@ -389,6 +389,7 @@ auto GetPickFn(
       nargs.last_iteration += nid;
       nargs.d = std::pow(nargs.d, nargs.iteration - *nargs.last_iteration);
       *nargs.s = *nargs.s * nargs.d + 1.;
+      *nargs.last_iteration = nargs.iteration;
     }
     // If fanouts.size() > 1, perform sampling for each edge type of each
     // node; otherwise just sample once for each node with no regard of edge
@@ -1324,7 +1325,7 @@ inline int64_t BanditLaborPick(
         heap_tensor.data_ptr<int32_t>());
   }
 
-  double min_loss = 0.;
+  auto min_loss = std::numeric_limits<double>::max();
   std::transform(args.loss, args.loss + num_neighbors, args.loss, [d=args.d, &min_loss](auto x) {
     const auto t = x * d;
     min_loss = std::min(min_loss, t);
@@ -1333,10 +1334,10 @@ inline int64_t BanditLaborPick(
 
   const auto s = *args.s;
   auto x = *args.x;
-  x = -1;
   const auto eta = args.c / std::sqrt(s);
 
   for (int z = 0;; z++) {
+    x = std::min(x, min_loss - 1e-2);
     const auto [w1, w2] = std::transform_reduce(args.loss, args.loss + num_neighbors,
       std::make_pair(0., 0.), [](auto a, auto b) {
         return std::make_pair(a.first + b.first, a.second + b.second);
@@ -1349,14 +1350,6 @@ inline int64_t BanditLaborPick(
     if (std::abs(w1 - 1.) < 1e-6) {
       *args.x = x;
       break;
-    }
-    else {
-      if (z > 100) {
-        for (auto i = args.loss; i < args.loss + num_neighbors; i++)
-          std::cerr << *i << ' ';
-        std::cerr << "\nx: " << x << ", exiting!" << std::endl;
-        return 0;
-      }
     }
   }
 
