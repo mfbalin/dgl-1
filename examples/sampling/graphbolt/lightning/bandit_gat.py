@@ -473,6 +473,9 @@ class BanditFeedbackCallback(Callback):
     
     def on_train_batch_end(self, trainer, datamodule, outputs, batch, batch_idx):
         trainer.datamodule.sampler.provide_feedback(batch)
+    
+    def on_validation_batch_end(self, trainer, datamodule, outputs, batch, batch_idx):
+        trainer.datamodule.sampler.provide_feedback(batch)
 
 class DataModule(LightningDataModule):
     def __init__(self, dataset, fanouts, batch_size, num_workers, bandit):
@@ -491,8 +494,8 @@ class DataModule(LightningDataModule):
         datapipe = gb.ItemSampler(
             node_set,
             batch_size=self.batch_size,
-            shuffle=True,
-            drop_last=True,
+            shuffle=is_train,
+            drop_last=is_train,
         )
         sampler = datapipe.sample_bandit_layer_neighbor if self.bandit else datapipe.sample_layer_neighbor
         datapipe = sampler(self.graph, self.fanouts)
