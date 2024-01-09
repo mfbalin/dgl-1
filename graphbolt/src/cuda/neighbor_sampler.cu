@@ -32,6 +32,12 @@ namespace ops {
 
 constexpr int BLOCK_SIZE = 128;
 
+template <typename T>
+__device__ T invcdf(T u, int64_t n, T rem) {
+  constexpr T one = 1;
+  return rem * (one - std::pow(one - u, one / n));
+}
+
 /**
  * @brief Fills the random_arr with random numbers and the edge_ids array with
  * original edge ids. When random_arr is sorted along with edge_ids, the first
@@ -44,7 +50,8 @@ __global__ void _ComputeRandoms(
     const int64_t num_edges, const indptr_t* const sliced_indptr,
     const indptr_t* const sub_indptr, const indices_t* const csr_rows,
     const weights_t* const weights, const indices_t* const indices,
-    const uint64_t random_seed, float_t* random_arr, edge_id_t* edge_ids) {
+    const uint64_t random_seed, float_t* random_arr, edge_id_t* edge_ids,
+    const bool replace, const int64_t* fanouts, const) {
   int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
   const int stride = gridDim.x * blockDim.x;
   curandStatePhilox4_32_10_t rng;
@@ -64,7 +71,11 @@ __global__ void _ComputeRandoms(
       curand_init(kCurandSeed, random_seed, indices[in_idx], &rng);
     }
 
-    const auto rnd = curand_uniform(&rng);
+    auto rnd = curand_uniform(&rng);
+    if (replace) {
+      float rem = 1.f;
+      rem -= invcdf(rnd, )
+    }
     const auto prob = weights ? weights[in_idx] : static_cast<weights_t>(1);
     const auto exp_rnd = -__logf(rnd);
     const float_t adjusted_rnd = prob > 0
@@ -82,9 +93,14 @@ struct MinInDegreeFanout {
   const indptr_t* in_degree;
   const int64_t* fanouts;
   size_t num_fanouts;
+  bool replace;
   __host__ __device__ auto operator()(int64_t i) {
-    return static_cast<indptr_t>(
-        min(static_cast<int64_t>(in_degree[i]), fanouts[i % num_fanouts]));
+    if (replace) {
+      return in_degree[i] > 0 ? fanouts[i % num_fanouts] : 0;
+    } else {
+      return static_cast<indptr_t>(
+          min(static_cast<int64_t>(in_degree[i]), fanouts[i % num_fanouts]));
+    }
   }
 };
 
@@ -129,7 +145,6 @@ c10::intrusive_ptr<sampling::FusedSampledSubgraph> SampleNeighbors(
     const std::vector<int64_t>& fanouts, bool replace, bool layer,
     bool return_eids, torch::optional<torch::Tensor> type_per_edge,
     torch::optional<torch::Tensor> probs_or_mask) {
-  TORCH_CHECK(!replace, "Sampling with replacement is not supported yet!");
   // Assume that indptr, indices, nodes, type_per_edge and probs_or_mask
   // are all resident on the GPU. If not, it is better to first extract them
   // before calling this function.
@@ -191,7 +206,7 @@ c10::intrusive_ptr<sampling::FusedSampledSubgraph> SampleNeighbors(
         auto sampled_degree = thrust::make_transform_iterator(
             iota, MinInDegreeFanout<indptr_t>{
                       in_degree.data_ptr<indptr_t>(), fanouts_device.get(),
-                      fanouts.size()});
+                      fanouts.size(), replace});
 
         {  // Compute output_indptr.
           size_t tmp_storage_size = 0;
