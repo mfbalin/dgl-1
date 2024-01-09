@@ -616,7 +616,7 @@ c10::intrusive_ptr<FusedSampledSubgraph> FusedCSCSamplingGraph::SampleNeighbors(
     probs_or_mask = this->EdgeAttribute(probs_name);
   }
 
-  if (!replace && utils::is_accessible_from_gpu(indptr_) &&
+  if (utils::is_accessible_from_gpu(indptr_) &&
       utils::is_accessible_from_gpu(indices_) &&
       utils::is_accessible_from_gpu(nodes) &&
       (!probs_or_mask.has_value() ||

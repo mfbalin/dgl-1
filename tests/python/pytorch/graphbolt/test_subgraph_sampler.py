@@ -434,8 +434,6 @@ def test_SubgraphSampler_Link_Hetero_With_Negative_Unknown_Etype(sampler_type):
 )
 def test_SubgraphSampler_Random_Hetero_Graph(sampler_type, replace):
     _check_sampler_type(sampler_type)
-    if F._default_context_str == "gpu" and replace == True:
-        pytest.skip("Sampling with replacement not yet supported on GPU.")
     num_nodes = 5
     num_edges = 9
     num_ntypes = 3
