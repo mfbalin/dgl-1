@@ -1,9 +1,12 @@
 """GraphBolt Itemset."""
 
+import copy
 import textwrap
 from typing import Dict, Iterable, Iterator, Sized, Tuple, Union
 
 import torch
+
+from dgl.utils import recursive_apply
 
 __all__ = ["ItemSet", "ItemSetDict"]
 
@@ -111,6 +114,15 @@ class ItemSet:
             )
         else:
             self._names = None
+        self.device = torch.device("cpu")
+        for item in self._items:
+            if hasattr(item, "device"):
+                if self.device is None:
+                    self.device = item.device
+                else:
+                    assert (
+                        self.device == item.device
+                    ), "All items in ItemSet should have be on the same device."
 
     def __iter__(self) -> Iterator:
         if isinstance(self._items, int):
@@ -177,6 +189,20 @@ class ItemSet:
     def names(self) -> Tuple[str]:
         """Return the names of the items."""
         return self._names
+
+    def to(self, device):  # pylint: disable=invalid-name
+        """Copy `ItemSet` to the specified device."""
+        self2 = copy.copy(self)
+
+        def to_(x):
+            if device == "pinned":
+                return x.pin_memory() if hasattr(x, "pin_memory") else x
+            else:
+                return x.to(device) if hasattr(x, "to") else x
+
+        self2._items = recursive_apply(self._items, to_)
+        self2.device = device
+        return self2
 
     def __repr__(self) -> str:
         ret = (
