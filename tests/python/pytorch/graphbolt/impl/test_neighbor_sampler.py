@@ -67,7 +67,6 @@ def test_NeighborSampler_GraphFetch(hetero, prob_name, sorted):
     gb.seed(123)
     expected_results = list(compact_per_layer)
     datapipe = gb.FetchInsubgraphData(datapipe, sample_per_layer)
-    datapipe = datapipe.wait_future()
     datapipe = gb.SamplePerLayerFromFetchedSubgraph(datapipe, sample_per_layer)
     datapipe = datapipe.compact_per_layer(True)
     gb.seed(123)

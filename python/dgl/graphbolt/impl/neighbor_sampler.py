@@ -1,12 +1,12 @@
 """Neighbor subgraph samplers for GraphBolt."""
 
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 import torch
 from torch.utils.data import functional_datapipe
 from torchdata.datapipes.iter import Mapper
 
+from ..base import CSCFormatBase
 from ..internal import compact_csc_format, unique_and_compact_csc_formats
 from ..minibatch_transformer import MiniBatchTransformer
 
@@ -33,16 +33,13 @@ class FetchInsubgraphData(Mapper):
     read as well."""
 
     def __init__(
-        self, datapipe, sample_per_layer_obj, stream=None, executor=None
+        self, datapipe, graph, prob_name=None, stream=None, executor=None
     ):
         super().__init__(datapipe, self._fetch_per_layer)
-        self.graph = sample_per_layer_obj.sampler.__self__
-        self.prob_name = sample_per_layer_obj.prob_name
+        self.graph = graph
+        self.prob_name = prob_name
         self.stream = stream
-        if executor is None:
-            self.executor = ThreadPoolExecutor(max_workers=1)
-        else:
-            self.executor = executor
+        self.executor = executor
 
     def _fetch_per_layer_impl(self, minibatch, stream):
         with torch.cuda.stream(self.stream):
@@ -128,9 +125,12 @@ class FetchInsubgraphData(Mapper):
         if self.stream is not None:
             current_stream = torch.cuda.current_stream()
             self.stream.wait_stream(current_stream)
-        return self.executor.submit(
-            self._fetch_per_layer_impl, minibatch, current_stream
-        )
+        if self.executor is None:
+            return self._fetch_per_layer_impl(minibatch, current_stream)
+        else:
+            return self.executor.submit(
+                self._fetch_per_layer_impl, minibatch, current_stream
+            )
 
 
 @functional_datapipe("sample_per_layer_from_fetched_subgraph")
@@ -158,6 +158,35 @@ class SamplePerLayerFromFetchedSubgraph(MiniBatchTransformer):
         minibatch.sampled_subgraphs[0] = sampled_subgraph
 
         return minibatch
+
+@functional_datapipe("sparse_sample_per_layer")
+class SparseSamplePerLayer(MiniBatchTransformer):
+    """Sample via DGL sparse."""
+
+    def __init__(self, datapipe, prob_name, *args, **kwargs):
+        super().__init__(datapipe, self._sparse_sample_per_layer)
+        self.prob_name = prob_name
+        self.args = args
+        self.kwargs = kwargs
+    
+    def _sparse_sample_per_layer(self, minibatch):
+        subgraph = minibatch.sampled_subgraphs[0]
+
+        ids, compacted_subgraph = compact_csc_format(CSCFormatBase(subgraph.csc_indptr, subgraph.indices), minibatch._seed_nodes)
+
+        from dgl.sparse import from_csc
+
+        mat = from_csc(compacted_subgraph.indptr, compacted_subgraph.indices, shape=(len(ids), len(minibatch._seed_nodes)))
+
+        eids = self.sample(mat, subgraph.edge_attributes[self.prob_name], minibatch.type_per_edge, *self.args, **self.kwargs)
+
+        
+
+    
+    @staticmethod
+    def sample(mat, prob, type_per_edge, *args, **kwargs):
+        # The default implementation samples all the edges.
+        return torch.arange(len(mat.indices))
 
 
 @functional_datapipe("sample_per_layer")
@@ -222,8 +251,10 @@ class FetcherAndSampler(MiniBatchTransformer):
     """Overlapped graph sampling operation replacement."""
 
     def __init__(self, sampler, stream, executor, buffer_size):
+        graph = sampler.sampler.__self__
+        prob_name = sampler.prob_name
         datapipe = sampler.datapipe.fetch_insubgraph_data(
-            sampler, stream, executor
+            graph, prob_name, stream, executor
         )
         datapipe = datapipe.buffer(buffer_size).wait_future().wait()
         datapipe = datapipe.sample_per_layer_from_fetched_subgraph(sampler)
