@@ -16,7 +16,7 @@ CMAKE_FLAGS="-DCUDA_TOOLKIT_ROOT_DIR=$CUDA_TOOLKIT_ROOT_DIR -DTORCH_CUDA_ARCH_LI
 
 if [ $# -eq 0 ]; then
 	$CMAKE_COMMAND $CMAKE_FLAGS ..
-	make -j
+	make
 	cp -v $CPSOURCE $BINDIR/tensoradapter/pytorch
 else
 	for PYTHON_INTERP in $@; do
@@ -24,7 +24,7 @@ else
 		mkdir -p $TORCH_VER
 		cd $TORCH_VER
 		$CMAKE_COMMAND $CMAKE_FLAGS -DPYTHON_INTERP=$PYTHON_INTERP ../..
-		make -j
+		make
 		cp -v $CPSOURCE $BINDIR/tensoradapter/pytorch
 		cd ..
 	done

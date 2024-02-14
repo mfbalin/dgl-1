@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.28)
+cmake_policy(SET CMP0146 OLD)
 ########################################
 # Borrowed and adapted from TVM project
 ########################################
@@ -440,6 +441,7 @@ if(BUILD_TORCH)
       BINDIR=${BINDIR}
       cmd /e:on /c ${BUILD_SCRIPT} ${TORCH_PYTHON_INTERPS}
       DEPENDS ${BUILD_SCRIPT}
+      JOB_SERVER_AWARE ON
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tensoradapter/pytorch)
   else(MSVC)
     file(TO_NATIVE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/tensoradapter/pytorch/build.sh BUILD_SCRIPT)
@@ -453,6 +455,7 @@ if(BUILD_TORCH)
       BINDIR=${CMAKE_CURRENT_BINARY_DIR}
       bash ${BUILD_SCRIPT} ${TORCH_PYTHON_INTERPS}
       DEPENDS ${BUILD_SCRIPT}
+      JOB_SERVER_AWARE ON
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tensoradapter/pytorch)
   endif(MSVC)
   add_dependencies(dgl tensoradapter_pytorch)
@@ -503,6 +506,7 @@ if(BUILD_SPARSE)
       LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS}
       cmd /e:on /c ${BUILD_SCRIPT} ${TORCH_PYTHON_INTERPS}
       DEPENDS ${BUILD_SCRIPT}
+      JOB_SERVER_AWARE ON
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/dgl_sparse)
   else(MSVC)
     file(TO_NATIVE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/dgl_sparse/build.sh BUILD_SCRIPT)
@@ -520,6 +524,7 @@ if(BUILD_SPARSE)
       LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS}
       bash ${BUILD_SCRIPT} ${TORCH_PYTHON_INTERPS}
       DEPENDS ${BUILD_SCRIPT}
+      JOB_SERVER_AWARE ON
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/dgl_sparse)
   endif(MSVC)
   add_dependencies(dgl_sparse dgl)
@@ -551,6 +556,7 @@ if(BUILD_GRAPHBOLT)
       LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS}
       cmd /e:on /c ${BUILD_SCRIPT} ${TORCH_PYTHON_INTERPS}
       DEPENDS ${BUILD_SCRIPT}
+      JOB_SERVER_AWARE ON
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/graphbolt)
   else(MSVC)
     file(TO_NATIVE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/graphbolt/build.sh BUILD_SCRIPT)
@@ -569,6 +575,7 @@ if(BUILD_GRAPHBOLT)
       LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS}
       bash ${BUILD_SCRIPT} ${TORCH_PYTHON_INTERPS}
       DEPENDS ${BUILD_SCRIPT}
+      JOB_SERVER_AWARE ON
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/graphbolt)
   endif(MSVC)
   if(USE_CUDA)
