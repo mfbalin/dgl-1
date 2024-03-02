@@ -77,7 +77,7 @@ def convert_to_pyg(h, subgraph):
     edge_index = torch.stack([src, dst], dim=0).long()
     src_size = subgraph.original_row_node_ids.size(0)
     dst_size = subgraph.original_column_node_ids.size(0)
-    h_src, h_dst = h, h[: dst_size]
+    h_src, h_dst = h, h[:dst_size]
     return (h_src, h_dst), edge_index, (src_size, dst_size)
 
 
@@ -133,7 +133,9 @@ class GraphSAGE(torch.nn.Module):
             )
             for data in tqdm(dataloader, "Inferencing"):
                 # len(data.sampled_subgraphs) = 1
-                h, edge_index, size = convert_to_pyg(data.node_features["feat"], data.sampled_subgraphs[0])
+                h, edge_index, size = convert_to_pyg(
+                    data.node_features["feat"], data.sampled_subgraphs[0]
+                )
                 hidden_x = layer(h, edge_index, size=size)
                 if not is_last_layer:
                     hidden_x = F.relu(hidden_x)
@@ -395,8 +397,8 @@ def main():
     hidden_channels = 256
     model = GraphSAGE(in_channels, hidden_channels, num_classes).to(args.device)
     assert len(args.fanout) == len(model.layers)
-    # torch._dynamo.config.cache_size_limit = 32
-    # model = torch.compile(model, fullgraph=True, dynamic=True)
+    torch._dynamo.config.cache_size_limit = 32
+    model = torch.compile(model, fullgraph=True, dynamic=True)
 
     train(train_dataloader, valid_dataloader, num_classes, model, args.device)
 
