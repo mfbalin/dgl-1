@@ -68,15 +68,15 @@ def convert_to_pyg(h, subgraph):
     #   We convert the provided sampled edges in CSC format from GraphBolt and
     #   convert to COO via using gb.expand_indptr.
     #####################################################################
+    src_size = h.size(0)
+    dst_size = subgraph.sampled_csc.indptr.size(0) - 1
     src = subgraph.sampled_csc.indices
     dst = gb.expand_indptr(
         subgraph.sampled_csc.indptr,
         dtype=src.dtype,
-        output_size=len(src),
+        output_size=src.size(0),
     )
     edge_index = torch.stack([src, dst], dim=0).long()
-    src_size = subgraph.original_row_node_ids.size(0)
-    dst_size = subgraph.original_column_node_ids.size(0)
     h_src, h_dst = h, h[:dst_size]
     return (h_src, h_dst), edge_index, (src_size, dst_size)
 
