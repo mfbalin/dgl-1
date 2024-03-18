@@ -81,10 +81,12 @@ class ConcurrentIdHashMap {
    * @param ptr The pointer to the object to test and modify .
    * @param old_val The value expected to be found in `ptr`.
    * @param new_val The value to store in `ptr` if it is as expected.
+   * @param weak Whether the operation can fail spuriously.
    *
    * @return Old value pointed by the `ptr`.
    */
-  static IdType CompareAndSwap(IdType* ptr, IdType old_val, IdType new_val);
+  static IdType CompareAndSwap(
+      IdType* ptr, IdType old_val, IdType new_val, bool weak = false);
 
   ConcurrentIdHashMap();
 

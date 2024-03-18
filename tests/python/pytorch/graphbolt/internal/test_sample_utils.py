@@ -171,7 +171,6 @@ def test_unique_and_compact_csc_formats_homo():
 
 
 def test_unique_and_compact_csc_formats_homo_large():
-    torch.set_num_threads(8)
     indptr = torch.arange(0, 2048 * 256 + 1, 256)
     seeds = torch.arange(0, indptr.size(0) - 1)
     indices = torch.arange(0, indptr[-1])

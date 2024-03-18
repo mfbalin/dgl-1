@@ -30,7 +30,7 @@ namespace sampling {
 
 template <typename IdType>
 IdType ConcurrentIdHashMap<IdType>::CompareAndSwap(
-    IdType* ptr, IdType old_val, IdType new_val) {
+    IdType* ptr, IdType old_val, IdType new_val, bool weak) {
 #ifdef _MSC_VER
   if (sizeof(IdType) == 4) {
     return _InterlockedCompareExchange(
@@ -42,7 +42,9 @@ IdType ConcurrentIdHashMap<IdType>::CompareAndSwap(
     LOG(FATAL) << "ID can only be int32 or int64";
   }
 #elif __GNUC__  // _MSC_VER
-  return __sync_val_compare_and_swap(ptr, old_val, new_val);
+  __atomic_compare_exchange_n(
+      ptr, &old_val, new_val, weak, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED);
+  return old_val;
 #else           // _MSC_VER
 #error "CompareAndSwap is not supported on this platform."
 #endif  // _MSC_VER
@@ -225,9 +227,13 @@ void ConcurrentIdHashMap<IdType>::InsertAndSetSmaller(IdType id, IdType value) {
 
   IdType empty_key = static_cast<IdType>(kEmptyKey);
   IdType val_pos = getValueIndex(pos);
+#if __GNUC__
+  IdType old_val = __atomic_load_n(hash_map_data + val_pos, __ATOMIC_RELAXED);
+#else
   IdType old_val = empty_key;
+#endif
   while (old_val == empty_key || old_val > value) {
-    old_val = CompareAndSwap(&(hash_map_data[val_pos]), old_val, value);
+    old_val = CompareAndSwap(&(hash_map_data[val_pos]), old_val, value, true);
   }
 }
 
