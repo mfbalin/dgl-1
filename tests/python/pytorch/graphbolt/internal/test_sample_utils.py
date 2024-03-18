@@ -170,6 +170,21 @@ def test_unique_and_compact_csc_formats_homo():
     assert torch.equal(unique_nodes, expected_unique_nodes)
 
 
+def test_unique_and_compact_csc_formats_homo_large():
+    torch.set_num_threads(8)
+    indptr = torch.arange(0, 2048 * 256 + 1, 256)
+    seeds = torch.arange(0, indptr.size(0) - 1)
+    indices = torch.arange(0, indptr[-1])
+    csc_formats = gb.CSCFormatBase(indptr=indptr, indices=indices)
+
+    unique_nodes, compacted_csc_formats = gb.unique_and_compact_csc_formats(
+        csc_formats, seeds
+    )
+
+    assert torch.equal(compacted_csc_formats.indices, indices)
+    assert torch.equal(unique_nodes, indices)
+
+
 def test_unique_and_compact_incorrect_indptr():
     seeds = torch.tensor([1, 3, 5, 2, 6, 7])
     indptr = torch.tensor([0, 2, 4, 6, 7, 11])
