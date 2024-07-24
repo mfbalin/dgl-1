@@ -4,6 +4,7 @@ import time
 from copy import deepcopy
 
 import dgl.graphbolt as gb
+import nvtx
 import torch
 
 # Needed until https://github.com/pytorch/pytorch/issues/121197 is resolved to
@@ -156,26 +157,27 @@ def train_helper(
     num_batches = 0  # Counter for the number of mini-batches processed
     start = time.time()
     dataloader = tqdm(dataloader, "Training")
-    for minibatch in dataloader:
-        node_features = minibatch.node_features["feat"]
-        labels = minibatch.labels
-        optimizer.zero_grad()
-        out = model(minibatch.sampled_subgraphs, node_features)
-        label_dtype = out.dtype if multilabel else None
-        loss = loss_fn(out, labels.to(label_dtype))
-        total_loss += loss.detach()
-        total_correct += MF.f1_score(out, labels, **kwargs) * labels.size(0)
-        total_samples += labels.size(0)
-        loss.backward()
-        optimizer.step()
-        num_batches += 1
-        dataloader.set_postfix(
-            {
-                "num_nodes": node_features.size(0),
-                "gpu_cache_miss": gpu_cache_miss_rate_fn(),
-                "cpu_cache_miss": cpu_cache_miss_rate_fn(),
-            }
-        )
+    for step, minibatch in enumerate(dataloader):
+        with nvtx.annotate(f"train step {step}", color="red"):
+            node_features = minibatch.node_features["feat"]
+            labels = minibatch.labels
+            optimizer.zero_grad()
+            out = model(minibatch.sampled_subgraphs, node_features)
+            label_dtype = out.dtype if multilabel else None
+            loss = loss_fn(out, labels.to(label_dtype))
+            total_loss += loss.detach()
+            total_correct += MF.f1_score(out, labels, **kwargs) * labels.size(0)
+            total_samples += labels.size(0)
+            loss.backward()
+            optimizer.step()
+            num_batches += 1
+            dataloader.set_postfix(
+                {
+                    "num_nodes": node_features.size(0),
+                    "gpu_cache_miss": gpu_cache_miss_rate_fn(),
+                    "cpu_cache_miss": cpu_cache_miss_rate_fn(),
+                }
+            )
     train_loss = total_loss / num_batches
     train_acc = total_correct / total_samples
     end = time.time()
@@ -211,6 +213,7 @@ def train(
             cpu_cache_miss_rate_fn,
             device,
         )
+        exit()
         val_acc = evaluate(
             model,
             valid_dataloader,
