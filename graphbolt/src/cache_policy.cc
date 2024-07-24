@@ -19,6 +19,8 @@
  */
 #include "./cache_policy.h"
 
+#include <nvtx3/nvtx3.hpp>
+
 #include "./utils.h"
 
 namespace graphbolt {
@@ -27,6 +29,7 @@ namespace storage {
 template <typename CachePolicy>
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 BaseCachePolicy::QueryImpl(CachePolicy& policy, torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   auto positions = torch::empty_like(
       keys, keys.options()
                 .dtype(torch::kInt64)
@@ -66,6 +69,7 @@ BaseCachePolicy::QueryImpl(CachePolicy& policy, torch::Tensor keys) {
 template <typename CachePolicy>
 torch::Tensor BaseCachePolicy::ReplaceImpl(
     CachePolicy& policy, torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   auto positions = torch::empty_like(
       keys, keys.options()
                 .dtype(torch::kInt64)
@@ -94,6 +98,7 @@ torch::Tensor BaseCachePolicy::ReplaceImpl(
 template <bool write, typename CachePolicy>
 void BaseCachePolicy::ReadingWritingCompletedImpl(
     CachePolicy& policy, torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   AT_DISPATCH_INDEX_TYPES(
       keys.scalar_type(), "BaseCachePolicy::ReadingCompleted", ([&] {
         auto keys_ptr = keys.data_ptr<index_t>();

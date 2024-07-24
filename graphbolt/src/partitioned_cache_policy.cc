@@ -20,6 +20,7 @@
 #include "./partitioned_cache_policy.h"
 
 #include <numeric>
+#include <nvtx3/nvtx3.hpp>
 
 #include "./utils.h"
 
@@ -42,6 +43,7 @@ PartitionedCachePolicy::PartitionedCachePolicy(
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 PartitionedCachePolicy::Partition(torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   const int64_t num_parts = policies_.size();
   torch::Tensor offsets = torch::zeros(
       num_parts * num_parts + 1, keys.options().dtype(torch::kInt64));
@@ -116,6 +118,7 @@ PartitionedCachePolicy::Partition(torch::Tensor keys) {
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 PartitionedCachePolicy::Query(torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
     return policies_[0]->Query(keys);
@@ -207,6 +210,7 @@ PartitionedCachePolicy::QueryAsync(torch::Tensor keys) {
 }
 
 torch::Tensor PartitionedCachePolicy::Replace(torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
     return policies_[0]->Replace(keys);
@@ -244,6 +248,7 @@ c10::intrusive_ptr<Future<torch::Tensor>> PartitionedCachePolicy::ReplaceAsync(
 
 template <bool write>
 void PartitionedCachePolicy::ReadingWritingCompletedImpl(torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
     if constexpr (write)

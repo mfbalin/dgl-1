@@ -23,6 +23,7 @@
 #include <fstream>
 #include <memory>
 #include <numeric>
+#include <nvtx3/nvtx3.hpp>
 #include <stdexcept>
 #include <vector>
 
@@ -154,6 +155,7 @@ class ReadRequest {
 
 #ifdef HAVE_LIBRARY_LIBURING
 torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
+  NVTX3_FUNC_RANGE();
   std::vector<int64_t> shape(index.sizes().begin(), index.sizes().end());
   shape.insert(shape.end(), feature_dim_.begin() + 1, feature_dim_.end());
   auto result = torch::empty(
