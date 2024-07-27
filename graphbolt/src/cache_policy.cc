@@ -49,6 +49,7 @@ BaseCachePolicy::QueryImpl(CachePolicy& policy, torch::Tensor keys) {
         auto indices_ptr = indices.data_ptr<int64_t>();
         auto filtered_keys_ptr = filtered_keys.data_ptr<index_t>();
         std::lock_guard lock(*policy.mtx_);
+        nvtx3::scoped_range loop{"QueryLocked"};
         for (int64_t i = 0; i < keys.size(0); i++) {
           const auto key = keys_ptr[i];
           auto pos = policy.template Read<false>(key);
@@ -82,6 +83,7 @@ torch::Tensor BaseCachePolicy::ReplaceImpl(
         phmap::flat_hash_set<int64_t> position_set;
         position_set.reserve(keys.size(0));
         std::lock_guard lock(*policy.mtx_);
+        nvtx3::scoped_range loop{"ReplaceLocked"};
         for (int64_t i = 0; i < keys.size(0); i++) {
           const auto key = keys_ptr[i];
           const auto pos_optional = policy.template Read<true>(key);
@@ -105,6 +107,7 @@ void BaseCachePolicy::ReadingWritingCompletedImpl(
       keys.scalar_type(), "BaseCachePolicy::ReadingCompleted", ([&] {
         auto keys_ptr = keys.data_ptr<index_t>();
         std::lock_guard lock(*policy.mtx_);
+        nvtx3::scoped_range loop{"ReadingWritingLocked"};
         for (int64_t i = 0; i < keys.size(0); i++) {
           policy.template Unmark<write>(keys_ptr[i]);
         }

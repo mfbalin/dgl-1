@@ -170,6 +170,7 @@ torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
   std::atomic<int> error_flag{};
   std::atomic<int64_t> work_queue{};
   graphbolt::parallel_for(0, num_thread_, 1, [&](const int thread_id, int) {
+    nvtx3::scoped_range loop{"IOWorker: " + std::to_string(thread_id)};
     auto &io_uring_queue = io_uring_queue_[thread_id];
     auto my_read_buffer = ReadBuffer(thread_id);
     // The completion queue might contain 4 * kGroupSize while we may submit
@@ -194,6 +195,7 @@ torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
     };
     // Make sure we have sole control of this thread's queue.
     std::lock_guard io_uring_queue_lock(mtx_[thread_id]);
+    nvtx3::scoped_range loop2{"IOWorkerLocked: " + std::to_string(thread_id)};
     for (int64_t read_buffer_slot = 0; true;) {
       auto request_read_buffer = [&]() {
         return my_read_buffer + (aligned_length_ + block_size_) *
