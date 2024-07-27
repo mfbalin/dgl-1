@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
+import nvtx
 import torch
 from torch.utils.data import functional_datapipe
 from torchdata.datapipes.iter import Mapper
@@ -37,6 +38,7 @@ class FetchCachedInsubgraphData(Mapper):
         super().__init__(datapipe, self._fetch_per_layer)
         self.cache = gpu_graph_cache
 
+    @nvtx.annotate()
     def _fetch_per_layer(self, minibatch):
         minibatch._seeds, minibatch._replace = self.cache.query(
             minibatch._seeds
@@ -55,6 +57,7 @@ class CombineCachedAndFetchedInSubgraph(Mapper):
         super().__init__(datapipe, self._combine_per_layer)
         self.prob_name = sample_per_layer_obj.prob_name
 
+    @nvtx.annotate()
     def _combine_per_layer(self, minibatch):
         subgraph = minibatch._sliced_sampling_graph
 
@@ -214,6 +217,7 @@ class FetchInsubgraphData(Mapper):
 
             return minibatch
 
+    @nvtx.annotate()
     def _fetch_per_layer(self, minibatch):
         current_stream = None
         if self.stream is not None:
@@ -235,6 +239,7 @@ class SamplePerLayerFromFetchedSubgraph(MiniBatchTransformer):
         self.replace = sample_per_layer_obj.replace
         self.prob_name = sample_per_layer_obj.prob_name
 
+    @nvtx.annotate()
     def _sample_per_layer_from_fetched_subgraph(self, minibatch):
         subgraph = minibatch._sliced_sampling_graph
         delattr(minibatch, "_sliced_sampling_graph")
@@ -266,6 +271,7 @@ class SamplePerLayer(MiniBatchTransformer):
         self.replace = replace
         self.prob_name = prob_name
 
+    @nvtx.annotate()
     def _sample_per_layer(self, minibatch):
         kwargs = {
             key[1:]: getattr(minibatch, key)
@@ -291,6 +297,7 @@ class CompactPerLayer(MiniBatchTransformer):
         super().__init__(datapipe, self._compact_per_layer)
         self.deduplicate = deduplicate
 
+    @nvtx.annotate()
     def _compact_per_layer(self, minibatch):
         subgraph = minibatch.sampled_subgraphs[0]
         seeds = minibatch._seed_nodes
