@@ -146,6 +146,9 @@ def create_dataloader(
         datapipe,
         num_workers=args.num_workers,
         overlap_graph_fetch=args.overlap_graph_fetch,
+        num_gpu_cached_edges=args.num_gpu_cached_edges,
+        gpu_cache_threshold=args.gpu_graph_caching_threshold,
+        max_uva_threads=10*1024,
     )
 
 
@@ -228,7 +231,6 @@ def train(
             cpu_cache_miss_rate_fn,
             device,
         )
-        exit()
         val_acc = evaluate(
             model,
             valid_dataloader,
@@ -398,6 +400,18 @@ def parse_args():
         default="sample_layer_neighbor",
         choices=["sample_neighbor", "sample_layer_neighbor"],
         help="The sampling function when doing layerwise sampling.",
+    )
+    parser.add_argument(
+        "--num-gpu-cached-edges",
+        type=int,
+        default=0,
+        help="The number of edges to be cached from the graph on the GPU.",
+    )
+    parser.add_argument(
+        "--gpu-graph-caching-threshold",
+        type=int,
+        default=1,
+        help="The number of accesses after which a vertex neighborhood will be cached.",
     )
     parser.add_argument(
         "--disable-torch-compile",
