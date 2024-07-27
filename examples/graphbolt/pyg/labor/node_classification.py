@@ -2,6 +2,7 @@ import argparse
 import time
 
 from copy import deepcopy
+from functools import partial
 
 import dgl.graphbolt as gb
 import nvtx
@@ -12,11 +13,20 @@ import torch
 import torch._inductor.codecache
 import torch.nn as nn
 import torch.nn.functional as F
-import torchmetrics.functional as MF
+import torcheval.metrics.functional as MF
 from load_dataset import load_dataset
 from sage_conv import SAGEConv
 from torch.torch_version import TorchVersion
 from tqdm import tqdm
+
+
+def micro_f1_score(out, labels):
+    assert out.ndim == 2
+    assert out.size(0) == labels.size(0)
+    assert labels.ndim == 1 or (labels.ndim == 2 and labels.size(1) == 1)
+    labels = labels.flatten()
+    predictions = torch.argmax(out, 1)
+    return torch.sum(labels == predictions).float() / labels.size(0)
 
 
 def convert_to_pyg(h, subgraph):
@@ -145,31 +155,36 @@ def train_helper(
     optimizer,
     loss_fn,
     multilabel,
-    kwargs,
+    evaluate_fn,
     gpu_cache_miss_rate_fn,
     cpu_cache_miss_rate_fn,
     device,
 ):
     model.train()  # Set the model to training mode
     total_loss = torch.zeros(1, device=device)  # Accumulator for the total loss
-    total_correct = 0  # Accumulator for the total number of correct predictions
+    # Accumulator for the total number of correct predictions
+    total_correct = torch.zeros(1, device=device)
     total_samples = 0  # Accumulator for the total number of samples processed
     num_batches = 0  # Counter for the number of mini-batches processed
     start = time.time()
     dataloader = tqdm(dataloader, "Training")
     for step, minibatch in enumerate(dataloader):
         with nvtx.annotate(f"train step {step}", color="red"):
-            node_features = minibatch.node_features["feat"]
-            labels = minibatch.labels
-            optimizer.zero_grad()
-            out = model(minibatch.sampled_subgraphs, node_features)
-            label_dtype = out.dtype if multilabel else None
-            loss = loss_fn(out, labels.to(label_dtype))
-            total_loss += loss.detach()
-            total_correct += MF.f1_score(out, labels, **kwargs) * labels.size(0)
-            total_samples += labels.size(0)
-            loss.backward()
-            optimizer.step()
+            with nvtx.annotate(f"forward", color="brown"):
+                node_features = minibatch.node_features["feat"]
+                labels = minibatch.labels
+                optimizer.zero_grad()
+                out = model(minibatch.sampled_subgraphs, node_features)
+                label_dtype = out.dtype if multilabel else None
+                loss = loss_fn(out, labels.to(label_dtype))
+                total_loss += loss.detach()
+            with nvtx.annotate(f"f1_score", color="brown"):
+                total_correct += evaluate_fn(out, labels) * labels.size(0)
+            with nvtx.annotate(f"backward", color="yellow"):
+                total_samples += labels.size(0)
+                loss.backward()
+            with nvtx.annotate(f"optimizer", color="purple"):
+                optimizer.step()
             num_batches += 1
             dataloader.set_postfix(
                 {
@@ -189,7 +204,7 @@ def train(
     valid_dataloader,
     model,
     multilabel,
-    kwargs,
+    evaluate_fn,
     gpu_cache_miss_rate_fn,
     cpu_cache_miss_rate_fn,
     device,
@@ -208,7 +223,7 @@ def train(
             optimizer,
             loss_fn,
             multilabel,
-            kwargs,
+            evaluate_fn,
             gpu_cache_miss_rate_fn,
             cpu_cache_miss_rate_fn,
             device,
@@ -217,7 +232,7 @@ def train(
         val_acc = evaluate(
             model,
             valid_dataloader,
-            kwargs,
+            evaluate_fn,
             gpu_cache_miss_rate_fn,
             cpu_cache_miss_rate_fn,
         )
@@ -227,7 +242,7 @@ def train(
             best_model_epoch = epoch
         print(
             f"Epoch {epoch:02d}, Loss: {train_loss.item():.4f}, "
-            f"Approx. Train: {train_acc:.4f}, Approx. Val: {val_acc:.4f}, "
+            f"Approx. Train: {train_acc.item():.4f}, Approx. Val: {val_acc:.4f}, "
             f"Time: {duration}s"
         )
         if best_model_epoch + args.early_stopping_patience < epoch:
@@ -243,7 +258,7 @@ def layerwise_infer(
     itemsets,
     all_nodes_set,
     model,
-    kwargs,
+    evaluate_fn,
 ):
     model.eval()
     dataloader = create_dataloader(
@@ -260,10 +275,9 @@ def layerwise_infer(
     metrics = {}
     for split_name, itemset in itemsets.items():
         nid, labels = itemset[:]
-        acc = MF.f1_score(
+        acc = evaluate_fn(
             pred[nid.to(pred.device)],
             labels.to(pred.device),
-            **kwargs,
         )
         metrics[split_name] = acc.item()
 
@@ -272,7 +286,11 @@ def layerwise_infer(
 
 @torch.no_grad()
 def evaluate(
-    model, dataloader, kwargs, gpu_cache_miss_rate_fn, cpu_cache_miss_rate_fn
+    model,
+    dataloader,
+    evaluate_fn,
+    gpu_cache_miss_rate_fn,
+    cpu_cache_miss_rate_fn,
 ):
     model.eval()
     y_hats = []
@@ -292,7 +310,7 @@ def evaluate(
             }
         )
 
-    return MF.f1_score(torch.cat(y_hats), torch.cat(ys), **kwargs)
+    return evaluate_fn(torch.cat(y_hats), torch.cat(ys))
 
 
 def parse_args():
@@ -388,11 +406,19 @@ def parse_args():
         help="Disables torch.compile() on the trained GNN model because it is "
         "enabled by default for torch>=2.2.0 without this option.",
     )
+    parser.add_argument(
+        "--num-io-threads",
+        type=int,
+        default=4,
+        help="The number of background io_uring threads.",
+    )
     parser.add_argument("--precision", type=str, default="high")
     return parser.parse_args()
 
 
 def main():
+    torch.ops.graphbolt.set_num_io_uring_threads(args.num_io_threads)
+    torch.set_num_threads((torch.get_num_threads() + 1) // 2)
     torch.set_float32_matmul_precision(args.precision)
     if not torch.cuda.is_available():
         args.mode = "cpu-cpu-cpu"
@@ -489,18 +515,14 @@ def main():
         torch._dynamo.config.cache_size_limit = 32
         model = torch.compile(model, fullgraph=True, dynamic=True)
 
-    kwargs = {
-        "num_labels" if multilabel else "num_classes": num_classes,
-        "task": "multilabel" if multilabel else "multiclass",
-        "validate_args": False,
-    }
+    evaluate_fn = MF.multilabel_accuracy if multilabel else micro_f1_score
 
     best_model = train(
         train_dataloader,
         valid_dataloader,
         model,
         multilabel,
-        kwargs,
+        evaluate_fn,
         gpu_cache_miss_rate_fn,
         cpu_cache_miss_rate_fn,
         args.device,
@@ -517,7 +539,7 @@ def main():
         itemsets,
         all_nodes_set,
         model,
-        kwargs,
+        evaluate_fn,
     )
     print("Final accuracy values:")
     print(final_acc)
