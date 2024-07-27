@@ -3,6 +3,7 @@
 from functools import partial
 from typing import Dict
 
+import nvtx
 import torch
 
 from torch.utils.data import functional_datapipe
@@ -121,29 +122,31 @@ class FeatureFetcher(MiniBatchTransformer):
 
     @staticmethod
     def _execute_stage(current_stage, data):
-        all_features = [data.node_features] + [
-            data.edge_features[i] for i in range(data.num_layers())
-        ]
-        for features in all_features:
-            for key in features:
-                handle, stage = features[key]
-                assert current_stage >= stage
-                if current_stage == stage:
-                    value = next(handle)
-                    features[key] = (handle if stage > 1 else value, stage - 1)
-        return data
+        with nvtx.annotate(f"FeatFetch {current_stage}", color="orange"):
+            all_features = [data.node_features] + [
+                data.edge_features[i] for i in range(data.num_layers())
+            ]
+            for features in all_features:
+                for key in features:
+                    handle, stage = features[key]
+                    assert current_stage >= stage
+                    if current_stage == stage:
+                        value = next(handle)
+                        features[key] = (handle if stage > 1 else value, stage - 1)
+            return data
 
     @staticmethod
     def _final_stage(data):
-        all_features = [data.node_features] + [
-            data.edge_features[i] for i in range(data.num_layers())
-        ]
-        for features in all_features:
-            for key in features:
-                value, stage = features[key]
-                assert stage == 0
-                features[key] = value.wait()
-        return data
+        with nvtx.annotate("FeatFetch 0", color="orange"):
+            all_features = [data.node_features] + [
+                data.edge_features[i] for i in range(data.num_layers())
+            ]
+            for features in all_features:
+                for key in features:
+                    value, stage = features[key]
+                    assert stage == 0
+                    features[key] = value.wait()
+            return data
 
     def _read(self, data):
         """
