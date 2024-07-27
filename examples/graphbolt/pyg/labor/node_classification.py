@@ -8,25 +8,27 @@ import dgl.graphbolt as gb
 import nvtx
 import torch
 
-# Needed until https://github.com/pytorch/pytorch/issues/121197 is resolved to
-# use the `--torch-compile` cmdline option reliably.
+# For torch.compile until https://github.com/pytorch/pytorch/issues/121197 is
+# resolved.
 import torch._inductor.codecache
+
+torch._dynamo.config.cache_size_limit = 32
+
 import torch.nn as nn
-import torch.nn.functional as F
-import torcheval.metrics.functional as MF
+import torchmetrics.functional as MF
 from load_dataset import load_dataset
-from sage_conv import SAGEConv
-from torch.torch_version import TorchVersion
+from sage_conv import SAGEConv as CustomSAGEConv
+from torch_geometric.nn import SAGEConv
 from tqdm import tqdm
 
 
-def micro_f1_score(out, labels):
+def accuracy(out, labels):
     assert out.ndim == 2
     assert out.size(0) == labels.size(0)
     assert labels.ndim == 1 or (labels.ndim == 2 and labels.size(1) == 1)
     labels = labels.flatten()
     predictions = torch.argmax(out, 1)
-    return torch.sum(labels == predictions).float() / labels.size(0)
+    return (labels == predictions).sum(dtype=torch.float64) / labels.size(0)
 
 
 def convert_to_pyg(h, subgraph):
@@ -49,25 +51,39 @@ def convert_to_pyg(h, subgraph):
 
 
 class GraphSAGE(torch.nn.Module):
-    def __init__(self, in_size, hidden_size, out_size, n_layers, dropout):
+    def __init__(
+        self, in_size, hidden_size, out_size, n_layers, dropout, variant
+    ):
         super().__init__()
+        assert variant in ["original", "custom"]
         self.layers = torch.nn.ModuleList()
-        sizes = [in_size] + [hidden_size] * n_layers
-        for i in range(n_layers):
-            self.layers.append(SAGEConv(sizes[i], sizes[i + 1]))
-        self.linear = nn.Linear(hidden_size, out_size)
+        if variant == "custom":
+            sizes = [in_size] + [hidden_size] * n_layers
+            for i in range(n_layers):
+                self.layers.append(CustomSAGEConv(sizes[i], sizes[i + 1]))
+            self.linear = nn.Linear(hidden_size, out_size)
+            self.activation = nn.GELU()
+        else:
+            sizes = [in_size] + [hidden_size] * (n_layers - 1) + [out_size]
+            for i in range(n_layers):
+                self.layers.append(SAGEConv(sizes[i], sizes[i + 1]))
+            self.activation = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
         self.hidden_size = hidden_size
         self.out_size = out_size
+        self.variant = variant
 
     def forward(self, subgraphs, x):
         h = x
-        for layer, subgraph in zip(self.layers, subgraphs):
+        for i, (layer, subgraph) in enumerate(zip(self.layers, subgraphs)):
             h, edge_index, size = convert_to_pyg(h, subgraph)
             h = layer(h, edge_index, size=size)
-            h = F.gelu(h)
-            h = self.dropout(h)
-        return self.linear(h)
+            if self.variant == "custom":
+                h = self.activation(h)
+                h = self.dropout(h)
+            elif i != len(subgraphs) - 1:
+                h = self.activation(h)
+        return self.linear(h) if self.variant == "custom" else h
 
     def inference(self, graph, features, dataloader, storage_device):
         """Conduct layer-wise inference to get all the node embeddings."""
@@ -90,9 +106,12 @@ class GraphSAGE(torch.nn.Module):
                     data.node_features["feat"], data.sampled_subgraphs[0]
                 )
                 hidden_x = layer(h, edge_index, size=size)
-                hidden_x = F.gelu(hidden_x)
-                if is_last_layer:
-                    hidden_x = self.linear(hidden_x)
+                if self.variant == "custom":
+                    hidden_x = self.activation(hidden_x)
+                    if is_last_layer:
+                        hidden_x = self.linear(hidden_x)
+                elif not is_last_layer:
+                    hidden_x = self.activation(hidden_x)
                 # By design, our output nodes are contiguous.
                 y[data.seeds[0] : data.seeds[-1] + 1] = hidden_x.to(
                     buffer_device
@@ -152,13 +171,27 @@ def create_dataloader(
     )
 
 
+@torch.compile
+def train_step(minibatch, optimizer, model, loss_fn, multilabel, eval_fn):
+    node_features = minibatch.node_features["feat"]
+    labels = minibatch.labels
+    optimizer.zero_grad()
+    out = model(minibatch.sampled_subgraphs, node_features)
+    label_dtype = out.dtype if multilabel else None
+    loss = loss_fn(out, labels.to(label_dtype))
+    num_correct = eval_fn(out, labels) * labels.size(0)
+    loss.backward()
+    optimizer.step()
+    return loss.detach(), num_correct, labels.size(0)
+
+
 def train_helper(
     dataloader,
     model,
     optimizer,
     loss_fn,
     multilabel,
-    evaluate_fn,
+    eval_fn,
     gpu_cache_miss_rate_fn,
     cpu_cache_miss_rate_fn,
     device,
@@ -166,32 +199,24 @@ def train_helper(
     model.train()  # Set the model to training mode
     total_loss = torch.zeros(1, device=device)  # Accumulator for the total loss
     # Accumulator for the total number of correct predictions
-    total_correct = torch.zeros(1, device=device)
+    total_correct = torch.zeros(1, dtype=torch.float64, device=device)
     total_samples = 0  # Accumulator for the total number of samples processed
     num_batches = 0  # Counter for the number of mini-batches processed
     start = time.time()
     dataloader = tqdm(dataloader, "Training")
     for step, minibatch in enumerate(dataloader):
-        with nvtx.annotate(f"train step {step}", color="red"):
-            with nvtx.annotate(f"forward", color="brown"):
-                node_features = minibatch.node_features["feat"]
-                labels = minibatch.labels
-                optimizer.zero_grad()
-                out = model(minibatch.sampled_subgraphs, node_features)
-                label_dtype = out.dtype if multilabel else None
-                loss = loss_fn(out, labels.to(label_dtype))
-                total_loss += loss.detach()
-            with nvtx.annotate(f"f1_score", color="brown"):
-                total_correct += evaluate_fn(out, labels) * labels.size(0)
-            with nvtx.annotate(f"backward", color="yellow"):
-                total_samples += labels.size(0)
-                loss.backward()
-            with nvtx.annotate(f"optimizer", color="purple"):
-                optimizer.step()
-            num_batches += 1
+        loss, num_correct, num_samples = train_step(
+            minibatch, optimizer, model, loss_fn, multilabel, eval_fn
+        )
+        total_loss += loss
+        total_correct += num_correct
+        total_samples += num_samples
+        num_batches += 1
+        if step % 25 == 0:
+            # log every 25 steps for performance.
             dataloader.set_postfix(
                 {
-                    "num_nodes": node_features.size(0),
+                    "num_nodes": minibatch.node_ids().size(0),
                     "gpu_cache_miss": gpu_cache_miss_rate_fn(),
                     "cpu_cache_miss": cpu_cache_miss_rate_fn(),
                 }
@@ -237,6 +262,7 @@ def train(
             evaluate_fn,
             gpu_cache_miss_rate_fn,
             cpu_cache_miss_rate_fn,
+            device,
         )
         if val_acc > best_model_acc:
             best_model_acc = val_acc
@@ -244,7 +270,8 @@ def train(
             best_model_epoch = epoch
         print(
             f"Epoch {epoch:02d}, Loss: {train_loss.item():.4f}, "
-            f"Approx. Train: {train_acc.item():.4f}, Approx. Val: {val_acc:.4f}, "
+            f"Approx. Train: {train_acc.item():.4f}, "
+            f"Approx. Val: {val_acc.item():.4f}, "
             f"Time: {duration}s"
         )
         if best_model_epoch + args.early_stopping_patience < epoch:
@@ -260,7 +287,7 @@ def layerwise_infer(
     itemsets,
     all_nodes_set,
     model,
-    evaluate_fn,
+    eval_fn,
 ):
     model.eval()
     dataloader = create_dataloader(
@@ -277,7 +304,7 @@ def layerwise_infer(
     metrics = {}
     for split_name, itemset in itemsets.items():
         nid, labels = itemset[:]
-        acc = evaluate_fn(
+        acc = eval_fn(
             pred[nid.to(pred.device)],
             labels.to(pred.device),
         )
@@ -286,33 +313,42 @@ def layerwise_infer(
     return metrics
 
 
+@torch.compile
+def evaluate_step(minibatch, model, eval_fn):
+    node_features = minibatch.node_features["feat"]
+    labels = minibatch.labels
+    out = model(minibatch.sampled_subgraphs, node_features)
+    num_correct = eval_fn(out, labels) * labels.size(0)
+    return num_correct, labels.size(0)
+
+
 @torch.no_grad()
 def evaluate(
     model,
     dataloader,
-    evaluate_fn,
+    eval_fn,
     gpu_cache_miss_rate_fn,
     cpu_cache_miss_rate_fn,
+    device,
 ):
     model.eval()
-    y_hats = []
-    ys = []
+    total_correct = torch.zeros(1, dtype=torch.float64, device=device)
+    total_samples = 0
     val_dataloader_tqdm = tqdm(dataloader, "Evaluating")
-    for minibatch in val_dataloader_tqdm:
-        node_features = minibatch.node_features["feat"]
-        labels = minibatch.labels
-        out = model(minibatch.sampled_subgraphs, node_features)
-        y_hats.append(out)
-        ys.append(labels)
-        val_dataloader_tqdm.set_postfix(
-            {
-                "num_nodes": node_features.size(0),
-                "gpu_cache_miss": gpu_cache_miss_rate_fn(),
-                "cpu_cache_miss": cpu_cache_miss_rate_fn(),
-            }
-        )
+    for step, minibatch in enumerate(val_dataloader_tqdm):
+        num_correct, num_samples = evaluate_step(minibatch, model, eval_fn)
+        total_correct += num_correct
+        total_samples += num_samples
+        if step % 25 == 0:
+            val_dataloader_tqdm.set_postfix(
+                {
+                    "num_nodes": minibatch.node_ids().size(0),
+                    "gpu_cache_miss": gpu_cache_miss_rate_fn(),
+                    "cpu_cache_miss": cpu_cache_miss_rate_fn(),
+                }
+            )
 
-    return evaluate_fn(torch.cat(y_hats), torch.cat(ys))
+    return total_correct / total_samples
 
 
 def parse_args():
@@ -370,8 +406,8 @@ def parse_args():
             "cuda-pinned-cuda",
             "cuda-cuda-cuda",
         ],
-        help="Graph storage - feature storage - Train device: 'cpu' for CPU and RAM,"
-        " 'pinned' for pinned memory in RAM, 'cuda' for GPU and GPU memory.",
+        help="Graph storage - feature storage - Train device: 'cpu' for CPU and"
+        " RAM, 'pinned' for pinned memory in RAM, 'cuda' for GPU and GPU memory.",
     )
     parser.add_argument("--layer-dependency", action="store_true")
     parser.add_argument("--batch-dependency", type=int, default=1)
@@ -414,11 +450,11 @@ def parse_args():
         help="The number of accesses after which a vertex neighborhood will be cached.",
     )
     parser.add_argument(
-        "--disable-torch-compile",
-        action="store_true",
-        default=TorchVersion(torch.__version__) < TorchVersion("2.2.0a0"),
-        help="Disables torch.compile() on the trained GNN model because it is "
-        "enabled by default for torch>=2.2.0 without this option.",
+        "--sage-model-variant",
+        default="custom",
+        choices=["custom", "original"],
+        help="The custom SAGE GNN model provides higher accuracy with lower"
+        " runtime performance.",
     )
     parser.add_argument(
         "--num-io-threads",
@@ -523,20 +559,28 @@ def main():
         num_classes,
         len(args.fanout),
         args.dropout,
+        args.sage_model_variant,
     ).to(args.device)
     assert len(args.fanout) == len(model.layers)
-    if not args.disable_torch_compile:
-        torch._dynamo.config.cache_size_limit = 32
-        model = torch.compile(model, fullgraph=True, dynamic=True)
 
-    evaluate_fn = MF.multilabel_accuracy if multilabel else micro_f1_score
+    eval_fn = (
+        partial(
+            # TODO @mfbalin: Find an implementation that does not synchronize.
+            MF.f1_score,
+            task="multilabel",
+            num_labels=num_classes,
+            validate_args=False,
+        )
+        if multilabel
+        else accuracy
+    )
 
     best_model = train(
         train_dataloader,
         valid_dataloader,
         model,
         multilabel,
-        evaluate_fn,
+        eval_fn,
         gpu_cache_miss_rate_fn,
         cpu_cache_miss_rate_fn,
         args.device,
@@ -553,7 +597,7 @@ def main():
         itemsets,
         all_nodes_set,
         model,
-        evaluate_fn,
+        eval_fn,
     )
     print("Final accuracy values:")
     print(final_acc)
