@@ -249,7 +249,7 @@ PartitionedCachePolicy::ReplaceAsync(torch::Tensor keys) {
 template <bool write>
 void PartitionedCachePolicy::ReadingWritingCompletedImpl(
     torch::Tensor keys, std::vector<torch::Tensor>& partition_result) {
-  NVTX3_FUNC_RANGE();
+  nvtx3::scoped_range loop{"ReadingWriting: " + std::to_string(write)};
   if (policies_.size() == 1) {
     if constexpr (write)
       policies_[0]->WritingCompleted(keys);

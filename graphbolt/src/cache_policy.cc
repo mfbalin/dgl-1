@@ -107,7 +107,8 @@ void BaseCachePolicy::ReadingWritingCompletedImpl(
       keys.scalar_type(), "BaseCachePolicy::ReadingCompleted", ([&] {
         auto keys_ptr = keys.data_ptr<index_t>();
         std::lock_guard lock(*policy.mtx_);
-        nvtx3::scoped_range loop{"ReadingWritingLocked"};
+        nvtx3::scoped_range loop{
+            "ReadingWritingLocked: " + std::to_string(write)};
         for (int64_t i = 0; i < keys.size(0); i++) {
           policy.template Unmark<write>(keys_ptr[i]);
         }

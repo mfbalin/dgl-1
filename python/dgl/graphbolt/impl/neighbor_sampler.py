@@ -35,11 +35,11 @@ class FetchCachedInsubgraphData(Mapper):
     """
 
     def __init__(self, datapipe, gpu_graph_cache):
-        super().__init__(datapipe, self._fetch_per_layer)
+        super().__init__(datapipe, self._fetch_cached_per_layer)
         self.cache = gpu_graph_cache
 
     @nvtx.annotate()
-    def _fetch_per_layer(self, minibatch):
+    def _fetch_cached_per_layer(self, minibatch):
         minibatch._seeds, minibatch._replace = self.cache.query(
             minibatch._seeds
         )
@@ -126,7 +126,6 @@ class FetchInsubgraphData(Mapper):
         sample_per_layer_obj,
         gpu_graph_cache,
         stream=None,
-        executor=None,
     ):
         self.graph = sample_per_layer_obj.sampler.__self__
         datapipe = datapipe.concat_hetero_seeds(sample_per_layer_obj)
@@ -135,10 +134,6 @@ class FetchInsubgraphData(Mapper):
         super().__init__(datapipe, self._fetch_per_layer)
         self.prob_name = sample_per_layer_obj.prob_name
         self.stream = stream
-        if executor is None:
-            self.executor = ThreadPoolExecutor(max_workers=1)
-        else:
-            self.executor = executor
 
     def _fetch_per_layer_impl(self, minibatch, stream):
         with torch.cuda.stream(self.stream):
@@ -223,9 +218,7 @@ class FetchInsubgraphData(Mapper):
         if self.stream is not None:
             current_stream = torch.cuda.current_stream()
             self.stream.wait_stream(current_stream)
-        return self.executor.submit(
-            self._fetch_per_layer_impl, minibatch, current_stream
-        )
+        return self._fetch_per_layer_impl(minibatch, current_stream)
 
 
 @functional_datapipe("sample_per_layer_from_fetched_subgraph")
@@ -337,13 +330,12 @@ class FetcherAndSampler(MiniBatchTransformer):
         sampler,
         gpu_graph_cache,
         stream,
-        executor,
         buffer_size,
     ):
         datapipe = sampler.datapipe.fetch_insubgraph_data(
-            sampler, gpu_graph_cache, stream, executor
+            sampler, gpu_graph_cache, stream
         )
-        datapipe = datapipe.buffer(buffer_size).wait_future().wait()
+        datapipe = datapipe.buffer(buffer_size).wait()
         if gpu_graph_cache is not None:
             datapipe = datapipe.combine_cached_and_fetched_insubgraph(sampler)
         datapipe = datapipe.sample_per_layer_from_fetched_subgraph(sampler)
