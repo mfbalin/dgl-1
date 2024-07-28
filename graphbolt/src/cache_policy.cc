@@ -119,8 +119,8 @@ template <bool write, typename CachePolicy>
 void BaseCachePolicy::ReadingWritingCompletedImpl(
     CachePolicy& policy, torch::Tensor pointers) {
   nvtx3::scoped_range loop{
-      "ReadingWriting: " + std::to_string(write),
-      ", " + std::to_string(pointers.size(0))};
+      "ReadingWriting: " + std::to_string(write) + ", " +
+      std::to_string(pointers.size(0))};
   static_assert(
       sizeof(CacheKey*) == sizeof(int64_t), "You need 64 bit pointers.");
   auto pointers_ptr =
