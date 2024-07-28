@@ -1,6 +1,5 @@
 """CPU cached feature for GraphBolt."""
 
-import nvtx
 import torch
 
 from ..base import get_device_to_host_uva_stream, get_host_to_device_uva_stream
@@ -123,9 +122,8 @@ class CPUCachedFeature(Feature):
 
             yield  # first stage is done.
 
-            with nvtx.annotate("CPUCache 2", color="green"):
-                ids_copy_event.synchronize()
-                policy_future = policy.query_async(ids)
+            ids_copy_event.synchronize()
+            policy_future = policy.query_async(ids)
 
             yield
 
