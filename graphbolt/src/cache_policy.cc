@@ -118,7 +118,8 @@ std::tuple<torch::Tensor, torch::Tensor> BaseCachePolicy::ReplaceImpl(
 template <bool write, typename CachePolicy>
 void BaseCachePolicy::ReadingWritingCompletedImpl(
     CachePolicy& policy, torch::Tensor pointers) {
-  NVTX3_FUNC_RANGE();
+  nvtx3::scoped_range loop{
+      "ReadingWritingCompletedImpl: " + std::to_string(write)};
   static_assert(
       sizeof(CacheKey*) == sizeof(int64_t), "You need 64 bit pointers.");
   auto pointers_ptr =
