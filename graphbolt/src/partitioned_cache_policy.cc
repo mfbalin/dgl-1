@@ -318,7 +318,7 @@ void PartitionedCachePolicy::ReadingWritingCompletedImpl(
     begin = offsets_ptr[tid];
     end = offsets_ptr[tid + 1];
     nvtx3::scoped_range loop{
-        "ReadWrite: " + std::to_string(write) + ", on", std::to_string(tid)};
+        "ReadWrite: " + std::to_string(write) + ", on" + std::to_string(tid)};
     if constexpr (write)
       policies_.at(tid)->WritingCompleted(pointers.slice(0, begin, end));
     else
