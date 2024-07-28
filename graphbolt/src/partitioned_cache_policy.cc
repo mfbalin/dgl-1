@@ -158,6 +158,7 @@ PartitionedCachePolicy::Query(torch::Tensor keys) {
       const auto tid = begin;
       begin = offsets_ptr[tid];
       end = offsets_ptr[tid + 1];
+      nvtx3::scoped_range loop{"Query on: " + std::to_string(tid)};
       results[tid] =
           policies_.at(tid)->Query(permuted_keys.slice(0, begin, end));
       result_offsets[tid] = std::get<0>(results[tid]).size(0);
@@ -264,8 +265,12 @@ PartitionedCachePolicy::Replace(torch::Tensor keys) {
     const auto tid = begin;
     begin = offsets_ptr[tid];
     end = offsets_ptr[tid + 1];
-    auto [positions, pointers] =
-        policies_.at(tid)->Replace(permuted_keys.slice(0, begin, end));
+    torch::Tensor positions, pointers;
+    {
+      nvtx3::scoped_range loop{"Replace on: " + std::to_string(tid)};
+      std::tie(positions, pointers) =
+          policies_.at(tid)->Replace(permuted_keys.slice(0, begin, end));
+    }
     const auto ticket = semaphore.fetch_add(-1, std::memory_order_release) - 1;
     if (ticket == 0) {
       // This thread was the last thread in the critical region.
@@ -295,7 +300,7 @@ PartitionedCachePolicy::ReplaceAsync(torch::Tensor keys) {
 template <bool write>
 void PartitionedCachePolicy::ReadingWritingCompletedImpl(
     torch::Tensor pointers, torch::Tensor offsets) {
-  nvtx3::scoped_range loop{"ReadingWriting: " + std::to_string(write)};
+  nvtx3::scoped_range loop{"ReadWrite: " + std::to_string(write)};
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
     if constexpr (write)
@@ -312,6 +317,8 @@ void PartitionedCachePolicy::ReadingWritingCompletedImpl(
     const auto tid = begin;
     begin = offsets_ptr[tid];
     end = offsets_ptr[tid + 1];
+    nvtx3::scoped_range loop{
+        "ReadWrite: " + std::to_string(write) + ", on", std::to_string(tid)};
     if constexpr (write)
       policies_.at(tid)->WritingCompleted(pointers.slice(0, begin, end));
     else
