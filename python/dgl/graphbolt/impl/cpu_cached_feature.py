@@ -144,7 +144,7 @@ class CPUCachedFeature(Feature):
                 values_from_cpu_copy_event = torch.cuda.Event()
                 values_from_cpu_copy_event.record()
 
-                positions_future = policy.replace_async(missing_keys)
+            positions_future = policy.replace_async(missing_keys)
 
             fallback_reader = self._fallback_feature.read_async(missing_keys)
             for _ in range(
