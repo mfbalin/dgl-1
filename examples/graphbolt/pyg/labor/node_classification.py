@@ -133,9 +133,11 @@ def create_dataloader(
         shuffle=(job == "train"),
         drop_last=(job == "train"),
     )
+    need_copy = True
     # Copy the data to the specified device.
-    if args.graph_device != "cpu":
+    if args.graph_device != "cpu" and need_copy:
         datapipe = datapipe.copy_to(device=device)
+        need_copy = False
     # Sample neighbors for each node in the mini-batch.
     kwargs = (
         {
@@ -149,8 +151,9 @@ def create_dataloader(
         graph, fanout if job != "infer" else [-1], **kwargs
     )
     # Copy the data to the specified device.
-    if args.feature_device != "cpu":
+    if args.feature_device != "cpu" and need_copy:
         datapipe = datapipe.copy_to(device=device)
+        need_copy = False
     # Fetch node features for the sampled subgraph.
     datapipe = datapipe.fetch_feature(
         features,
@@ -158,8 +161,9 @@ def create_dataloader(
         overlap_fetch=args.overlap_feature_fetch,
     )
     # Copy the data to the specified device.
-    if args.feature_device == "cpu":
+    if args.feature_device == "cpu" and need_copy:
         datapipe = datapipe.copy_to(device=device)
+        need_copy = False
     # Create and return a DataLoader to handle data loading.
     return gb.DataLoader(
         datapipe,
@@ -171,6 +175,7 @@ def create_dataloader(
     )
 
 
+@nvtx.annotate()
 @torch.compile
 def train_step(minibatch, optimizer, model, loss_fn, multilabel, eval_fn):
     node_features = minibatch.node_features["feat"]
@@ -274,6 +279,8 @@ def train(
             f"Approx. Val: {val_acc.item():.4f}, "
             f"Time: {duration}s"
         )
+        if epoch == args.epochs - 1:
+            exit()
         if best_model_epoch + args.early_stopping_patience < epoch:
             break
     return best_model
@@ -313,6 +320,7 @@ def layerwise_infer(
     return metrics
 
 
+@nvtx.annotate()
 @torch.compile
 def evaluate_step(minibatch, model, eval_fn):
     node_features = minibatch.node_features["feat"]
@@ -468,6 +476,7 @@ def parse_args():
 
 def main():
     torch.ops.graphbolt.set_num_io_uring_threads(args.num_io_threads)
+    torch.set_num_interop_threads(torch.get_num_threads())
     torch.set_num_threads((torch.get_num_threads() + 1) // 2)
     torch.set_float32_matmul_precision(args.precision)
     if not torch.cuda.is_available():
