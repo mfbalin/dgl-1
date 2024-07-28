@@ -29,7 +29,7 @@ namespace storage {
 template <typename CachePolicy>
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 BaseCachePolicy::QueryImpl(CachePolicy& policy, torch::Tensor keys) {
-  NVTX3_FUNC_RANGE();
+  nvtx3::scoped_range loop{"Querying: " + std::to_string(keys.size(0))};
   auto positions = torch::empty_like(
       keys, keys.options()
                 .dtype(torch::kInt64)
@@ -79,7 +79,7 @@ BaseCachePolicy::QueryImpl(CachePolicy& policy, torch::Tensor keys) {
 template <typename CachePolicy>
 std::tuple<torch::Tensor, torch::Tensor> BaseCachePolicy::ReplaceImpl(
     CachePolicy& policy, torch::Tensor keys) {
-  NVTX3_FUNC_RANGE();
+  nvtx3::scoped_range loop{"Replacing: " + std::to_string(keys.size(0))};
   auto positions = torch::empty_like(
       keys, keys.options()
                 .dtype(torch::kInt64)
@@ -119,7 +119,8 @@ template <bool write, typename CachePolicy>
 void BaseCachePolicy::ReadingWritingCompletedImpl(
     CachePolicy& policy, torch::Tensor pointers) {
   nvtx3::scoped_range loop{
-      "ReadingWritingCompletedImpl: " + std::to_string(write)};
+      "ReadingWriting: " + std::to_string(write),
+      ", " + std::to_string(pointers.size(0))};
   static_assert(
       sizeof(CacheKey*) == sizeof(int64_t), "You need 64 bit pointers.");
   auto pointers_ptr =
