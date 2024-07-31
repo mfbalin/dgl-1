@@ -80,6 +80,7 @@ template <typename CachePolicy>
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 BaseCachePolicy::QueryAndThenReplaceImpl(
     CachePolicy& policy, torch::Tensor keys) {
+  nvtx3::scoped_range loop{"QRing: " + std::to_string(keys.size(0))};
   auto positions = torch::empty_like(
       keys, keys.options()
                 .dtype(torch::kInt64)

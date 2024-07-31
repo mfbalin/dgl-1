@@ -249,6 +249,7 @@ std::tuple<
     torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
     torch::Tensor>
 PartitionedCachePolicy::QueryAndThenReplace(torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
     auto [positions, output_indices, pointers, missing_keys] =
@@ -286,6 +287,7 @@ PartitionedCachePolicy::QueryAndThenReplace(torch::Tensor keys) {
       const auto tid = begin;
       begin = offsets_ptr[tid];
       end = offsets_ptr[tid + 1];
+      nvtx3::scoped_range loop{"QR on: " + std::to_string(tid)};
       results[tid] = policies_.at(tid)->QueryAndThenReplace(
           permuted_keys.slice(0, begin, end));
       const auto missing_cnt = std::get<3>(results[tid]).size(0);
