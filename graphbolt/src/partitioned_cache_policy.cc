@@ -49,7 +49,7 @@ PartitionedCachePolicy::Partition(torch::Tensor keys) {
   torch::Tensor offsets = torch::empty(
       num_parts * num_parts + 1, keys.options().dtype(torch::kInt64));
   auto offsets_ptr = offsets.data_ptr<int64_t>();
-  std::memset(offsets_ptr, 0, offsets.size(0) * offsets.element_size());
+  std::fill_n(offsets_ptr, offsets.size(0), int64_t{});
   auto indices = torch::empty_like(keys, keys.options().dtype(torch::kInt64));
   auto part_id = torch::empty_like(keys, keys.options().dtype(torch::kInt32));
   const auto num_keys = keys.size(0);
@@ -248,12 +248,12 @@ PartitionedCachePolicy::QueryAsync(torch::Tensor keys) {
 std::tuple<
     torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
     torch::Tensor>
-PartitionedCachePolicy::QueryAndThenReplace(torch::Tensor keys) {
+PartitionedCachePolicy::QueryAndReplace(torch::Tensor keys) {
   NVTX3_FUNC_RANGE();
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
     auto [positions, output_indices, pointers, missing_keys] =
-        policies_[0]->QueryAndThenReplace(keys);
+        policies_[0]->QueryAndReplace(keys);
     auto found_and_missing_offsets = torch::empty(4, pointers.options());
     auto found_and_missing_offsets_ptr =
         found_and_missing_offsets.data_ptr<int64_t>();
@@ -288,7 +288,7 @@ PartitionedCachePolicy::QueryAndThenReplace(torch::Tensor keys) {
       begin = offsets_ptr[tid];
       end = offsets_ptr[tid + 1];
       nvtx3::scoped_range loop{"QR on: " + std::to_string(tid)};
-      results[tid] = policies_.at(tid)->QueryAndThenReplace(
+      results[tid] = policies_.at(tid)->QueryAndReplace(
           permuted_keys.slice(0, begin, end));
       const auto missing_cnt = std::get<3>(results[tid]).size(0);
       result_offsets[tid] = end - begin - missing_cnt;
@@ -367,11 +367,11 @@ PartitionedCachePolicy::QueryAndThenReplace(torch::Tensor keys) {
 }
 
 c10::intrusive_ptr<Future<std::vector<torch::Tensor>>>
-PartitionedCachePolicy::QueryAndThenReplaceAsync(torch::Tensor keys) {
+PartitionedCachePolicy::QueryAndReplaceAsync(torch::Tensor keys) {
   return async([=] {
     auto
         [positions, output_indices, pointers, missing_keys, found_offsets,
-         missing_offsets] = QueryAndThenReplace(keys);
+         missing_offsets] = QueryAndReplace(keys);
     return std::vector{positions,    output_indices, pointers,
                        missing_keys, found_offsets,  missing_offsets};
   });

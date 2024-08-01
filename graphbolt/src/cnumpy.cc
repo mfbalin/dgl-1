@@ -175,7 +175,7 @@ torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
   // Consume a slot so that parallel_for is called only if there are available
   // queues.
   semaphore_.acquire();
-  graphbolt::parallel_for(0, num_thread_, 1, [&](int thread_id, int) {
+  graphbolt::parallel_for_interop(0, num_thread_, 1, [&](int thread_id, int) {
     nvtx3::scoped_range loop{"IOWorker: " + std::to_string(thread_id)};
     // The completion queue might contain 4 * kGroupSize while we may submit
     // 4 * kGroupSize more. No harm in overallocation here.
