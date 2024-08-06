@@ -163,7 +163,6 @@ def create_dataloader(
     # Copy the data to the specified device.
     if need_copy:
         datapipe = datapipe.copy_to(device=device)
-        need_copy = False
     # Create and return a DataLoader to handle data loading.
     return gb.DataLoader(
         datapipe,
@@ -476,8 +475,6 @@ def parse_args():
 
 def main():
     torch.ops.graphbolt.set_num_io_uring_threads(args.num_io_threads)
-    torch.set_num_interop_threads(torch.get_num_threads())
-    torch.set_num_threads((torch.get_num_threads() + 1) // 2)
     torch.set_float32_matmul_precision(args.precision)
     if not torch.cuda.is_available():
         args.mode = "cpu-cpu-cpu"
