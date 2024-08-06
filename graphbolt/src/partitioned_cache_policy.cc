@@ -463,7 +463,6 @@ void PartitionedCachePolicy::ReadingWritingCompletedImpl(
     torch::Tensor pointers, torch::Tensor offsets) {
   nvtx3::scoped_range loop{"ReadWrite: " + std::to_string(write)};
   if (policies_.size() == 1) {
-    std::lock_guard lock(mtx_);
     if constexpr (write)
       policies_[0]->WritingCompleted(pointers);
     else
@@ -472,7 +471,6 @@ void PartitionedCachePolicy::ReadingWritingCompletedImpl(
   }
   auto offsets_ptr = offsets.data_ptr<int64_t>();
   namespace gb = graphbolt;
-  std::lock_guard lock(mtx_);
   gb::parallel_for(0, policies_.size(), 1, [&](int64_t begin, int64_t end) {
     if (begin == end) return;
     const auto tid = begin;
