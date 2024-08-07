@@ -23,6 +23,7 @@
 #include <fstream>
 #include <memory>
 #include <numeric>
+#include <nvtx3/nvtx3.hpp>
 #include <stdexcept>
 #include <vector>
 
@@ -158,6 +159,7 @@ class ReadRequest {
 
 #ifdef HAVE_LIBRARY_LIBURING
 torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
+  NVTX3_FUNC_RANGE();
   std::vector<int64_t> shape(index.sizes().begin(), index.sizes().end());
   shape.insert(shape.end(), feature_dim_.begin() + 1, feature_dim_.end());
   auto result = torch::empty(
@@ -177,6 +179,7 @@ torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
   semaphore_.acquire();
   std::atomic<int> num_semaphore_acquisitions = 1;
   graphbolt::parallel_for_each_interop(0, num_thread_, 1, [&](int thread_id) {
+    nvtx3::scoped_range loop{"IOWorker: " + std::to_string(thread_id)};
     // The completion queue might contain 4 * kGroupSize while we may submit
     // 4 * kGroupSize more. No harm in overallocation here.
     CircularQueue<ReadRequest> read_queue(8 * kGroupSize);
@@ -191,6 +194,7 @@ torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
       thread_id = available_queues_.back();
       available_queues_.pop_back();
     }
+    nvtx3::scoped_range loop2{"IOWorkerLocked: " + std::to_string(thread_id)};
     auto &io_uring_queue = io_uring_queue_[thread_id];
     auto submit_fn = [&](int64_t submission_minimum_batch_size) {
       if (read_queue.Size() < submission_minimum_batch_size) return;
