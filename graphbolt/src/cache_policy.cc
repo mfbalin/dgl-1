@@ -19,6 +19,8 @@
  */
 #include "./cache_policy.h"
 
+#include <nvtx3/nvtx3.hpp>
+
 #include "./utils.h"
 
 namespace graphbolt {
@@ -27,6 +29,7 @@ namespace storage {
 template <typename CachePolicy>
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 BaseCachePolicy::QueryImpl(CachePolicy& policy, torch::Tensor keys) {
+  nvtx3::scoped_range loop{"Querying: " + std::to_string(keys.size(0))};
   auto positions = torch::empty_like(
       keys, keys.options()
                 .dtype(torch::kInt64)
@@ -75,6 +78,7 @@ BaseCachePolicy::QueryImpl(CachePolicy& policy, torch::Tensor keys) {
 template <typename CachePolicy>
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 BaseCachePolicy::QueryAndReplaceImpl(CachePolicy& policy, torch::Tensor keys) {
+  nvtx3::scoped_range loop{"QRing: " + std::to_string(keys.size(0))};
   auto positions = torch::empty_like(
       keys, keys.options()
                 .dtype(torch::kInt64)
@@ -134,6 +138,7 @@ BaseCachePolicy::QueryAndReplaceImpl(CachePolicy& policy, torch::Tensor keys) {
 template <typename CachePolicy>
 std::tuple<torch::Tensor, torch::Tensor> BaseCachePolicy::ReplaceImpl(
     CachePolicy& policy, torch::Tensor keys) {
+  nvtx3::scoped_range loop{"Replacing: " + std::to_string(keys.size(0))};
   auto positions = torch::empty_like(
       keys, keys.options()
                 .dtype(torch::kInt64)
@@ -175,6 +180,9 @@ std::tuple<torch::Tensor, torch::Tensor> BaseCachePolicy::ReplaceImpl(
 
 template <bool write>
 void BaseCachePolicy::ReadingWritingCompletedImpl(torch::Tensor pointers) {
+  nvtx3::scoped_range loop{
+    "ReadingWriting: " + std::to_string(write) + ", " +
+    std::to_string(pointers.size(0))};
   static_assert(
       sizeof(CacheKey*) == sizeof(int64_t), "You need 64 bit pointers.");
   auto pointers_ptr =

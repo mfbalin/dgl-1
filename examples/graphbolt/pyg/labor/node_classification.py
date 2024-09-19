@@ -5,6 +5,7 @@ from copy import deepcopy
 from functools import partial
 
 import dgl.graphbolt as gb
+import nvtx
 import torch
 
 # For torch.compile until https://github.com/pytorch/pytorch/issues/121197 is
@@ -151,6 +152,7 @@ def create_dataloader(
     return gb.DataLoader(datapipe, num_workers=args.num_workers)
 
 
+@nvtx.annotate()
 @torch.compile
 def train_step(minibatch, optimizer, model, loss_fn, multilabel, eval_fn):
     node_features = minibatch.node_features["feat"]
@@ -254,6 +256,8 @@ def train(
             f"Approx. Val: {val_acc.item():.4f}, "
             f"Time: {duration}s"
         )
+        if epoch == args.epochs - 1:
+            exit()
         if best_model_epoch + args.early_stopping_patience < epoch:
             break
     return best_model
@@ -293,6 +297,7 @@ def layerwise_infer(
     return metrics
 
 
+@nvtx.annotate()
 @torch.compile
 def evaluate_step(minibatch, model, eval_fn):
     node_features = minibatch.node_features["feat"]
@@ -423,17 +428,36 @@ def parse_args():
         help="The sampling function when doing layerwise sampling.",
     )
     parser.add_argument(
+        "--num-gpu-cached-edges",
+        type=int,
+        default=0,
+        help="The number of edges to be cached from the graph on the GPU.",
+    )
+    parser.add_argument(
+        "--gpu-graph-caching-threshold",
+        type=int,
+        default=1,
+        help="The number of accesses after which a vertex neighborhood will be cached.",
+    )
+    parser.add_argument(
         "--sage-model-variant",
         default="custom",
         choices=["custom", "original"],
         help="The custom SAGE GNN model provides higher accuracy with lower"
         " runtime performance.",
     )
+    parser.add_argument(
+        "--num-io-threads",
+        type=int,
+        default=4,
+        help="The number of background io_uring threads.",
+    )
     parser.add_argument("--precision", type=str, default="high")
     return parser.parse_args()
 
 
 def main():
+    torch.ops.graphbolt.set_num_io_uring_threads(args.num_io_threads)
     torch.set_float32_matmul_precision(args.precision)
     if not torch.cuda.is_available():
         args.mode = "cpu-cpu-cpu"
