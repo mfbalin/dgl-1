@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <nvtx3/nvtx3.hpp>
 
 #include "./utils.h"
 
@@ -66,6 +67,7 @@ PartitionedCachePolicy::PartitionedCachePolicy(
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 PartitionedCachePolicy::Partition(torch::Tensor keys) {
+  NVTX3_FUNC_RANGE();
   const int64_t num_parts = policies_.size();
   torch::Tensor offsets = torch::empty(
       num_parts * num_parts + 1, keys.options().dtype(torch::kInt64));
@@ -141,6 +143,7 @@ std::tuple<
     torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
     torch::Tensor>
 PartitionedCachePolicy::Query(torch::Tensor keys, const int64_t offset) {
+  NVTX3_FUNC_RANGE();
   keys = AddOffset(keys, offset);
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
@@ -175,6 +178,7 @@ PartitionedCachePolicy::Query(torch::Tensor keys, const int64_t offset) {
   {
     std::lock_guard lock(mtx_);
     gb::parallel_for_each(0, policies_.size(), 1, [&](int64_t tid) {
+      nvtx3::scoped_range loop{"Query on: " + std::to_string(tid)};
       const auto begin = offsets_ptr[tid];
       const auto end = offsets_ptr[tid + 1];
       results[tid] =
@@ -258,6 +262,7 @@ std::tuple<
     torch::Tensor>
 PartitionedCachePolicy::QueryAndReplace(
     torch::Tensor keys, const int64_t offset) {
+  NVTX3_FUNC_RANGE();
   keys = AddOffset(keys, offset);
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
@@ -292,6 +297,7 @@ PartitionedCachePolicy::QueryAndReplace(
   {
     std::lock_guard lock(mtx_);
     gb::parallel_for_each(0, policies_.size(), 1, [&](int64_t tid) {
+      nvtx3::scoped_range loop{"QR on: " + std::to_string(tid)};
       const auto begin = offsets_ptr[tid];
       const auto end = offsets_ptr[tid + 1];
       results[tid] = policies_.at(tid)->QueryAndReplace(
@@ -387,6 +393,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 PartitionedCachePolicy::Replace(
     torch::Tensor keys, torch::optional<torch::Tensor> offsets,
     const int64_t offset) {
+  NVTX3_FUNC_RANGE();
   keys = AddOffset(keys, offset);
   if (policies_.size() == 1) {
     std::lock_guard lock(mtx_);
@@ -424,8 +431,12 @@ PartitionedCachePolicy::Replace(
   gb::parallel_for_each(0, policies_.size(), 1, [&](int64_t tid) {
     const auto begin = offsets_ptr[tid];
     const auto end = offsets_ptr[tid + 1];
-    auto [positions, pointers] =
-        policies_.at(tid)->Replace(permuted_keys.slice(0, begin, end));
+    torch::Tensor positions, pointers;
+    {
+      nvtx3::scoped_range loop{"Replace on: " + std::to_string(tid)};
+      std::tie(positions, pointers) =
+          policies_.at(tid)->Replace(permuted_keys.slice(0, begin, end));
+    }
     const auto ticket = semaphore.fetch_add(-1, std::memory_order_release) - 1;
     if (ticket == 0) {
       // This thread was the last thread in the critical region.
@@ -463,6 +474,7 @@ PartitionedCachePolicy::ReplaceAsync(
 template <bool write>
 void PartitionedCachePolicy::ReadingWritingCompletedImpl(
     torch::Tensor pointers, torch::Tensor offsets) {
+  nvtx3::scoped_range loop{"ReadWrite: " + std::to_string(write)};
   if (policies_.size() == 1) {
     if constexpr (write)
       policies_[0]->WritingCompleted(pointers);
@@ -473,6 +485,8 @@ void PartitionedCachePolicy::ReadingWritingCompletedImpl(
   auto offsets_ptr = offsets.data_ptr<int64_t>();
   namespace gb = graphbolt;
   gb::parallel_for_each(0, policies_.size(), 1, [&](int64_t tid) {
+    nvtx3::scoped_range loop{
+        "ReadWrite: " + std::to_string(write) + ", on: " + std::to_string(tid)};
     const auto begin = offsets_ptr[tid];
     const auto end = offsets_ptr[tid + 1];
     if constexpr (write)
