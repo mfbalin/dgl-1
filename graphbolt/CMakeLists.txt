@@ -42,7 +42,7 @@ message(STATUS "Setting directory to ${Torch_DIR}")
 find_package(Torch REQUIRED)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${TORCH_C_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -g3 -ggdb")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O1 -g3 -ggdb -fsanitize=address -static-libasan")
 
 set(LIB_GRAPHBOLT_NAME "graphbolt_pytorch_${TORCH_VER}")
 option(BUILD_WITH_TASKFLOW "Use taskflow as parallel backend" ON)
@@ -76,6 +76,7 @@ endif()
 add_library(${LIB_GRAPHBOLT_NAME} SHARED ${BOLT_SRC} ${BOLT_HEADERS})
 include_directories(BEFORE ${BOLT_DIR}
                            ${BOLT_HEADERS}
+                           "../third_party/NVTX/c/include"
                            # For CXX20 features:
                            # `std::atomic_ref`, `std::counting_semaphore`
                            "../third_party/cccl/libcudacxx/include"

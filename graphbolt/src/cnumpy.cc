@@ -23,6 +23,7 @@
 #include <fstream>
 #include <memory>
 #include <numeric>
+#include <nvtx3/nvtx3.hpp>
 #include <stdexcept>
 #include <vector>
 
@@ -157,6 +158,7 @@ class ReadRequest {
 
 #ifdef HAVE_LIBRARY_LIBURING
 torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
+  NVTX3_FUNC_RANGE();
   std::vector<int64_t> shape(index.sizes().begin(), index.sizes().end());
   shape.insert(shape.end(), feature_dim_.begin() + 1, feature_dim_.end());
   auto result = torch::empty(
@@ -173,13 +175,15 @@ torch::Tensor OnDiskNpyArray::IndexSelectIOUringImpl(torch::Tensor index) {
   // Construct a QueueAndBufferAcquirer object so that the worker threads can
   // share the available queues and buffers.
   QueueAndBufferAcquirer queue_source(this);
-  graphbolt::parallel_for_each_interop(0, num_thread_, 1, [&](int) {
+  graphbolt::parallel_for_each_interop(0, num_thread_, 1, [&](int thread_id) {
+    nvtx3::scoped_range loop{"IOWorker: " + std::to_string(thread_id)};
     // The completion queue might contain 4 * kGroupSize while we may submit
     // 4 * kGroupSize more. No harm in overallocation here.
     CircularQueue<ReadRequest> read_queue(8 * kGroupSize);
     int64_t num_submitted = 0;
     int64_t num_completed = 0;
     auto [acquired_queue_handle, read_buffer_source2] = queue_source.get();
+    nvtx3::scoped_range loop2{"IOWorkerLocked: " + std::to_string(thread_id)};
     auto &io_uring_queue = acquired_queue_handle.get();
     // Capturing structured binding is available only in C++20, so we rename.
     auto read_buffer_source = read_buffer_source2;

@@ -2,6 +2,7 @@
 
 from functools import partial
 
+import nvtx
 import torch
 import torch.distributed as thd
 from torch.utils.data import functional_datapipe
@@ -70,6 +71,7 @@ class CombineCachedAndFetchedInSubgraph(Mapper):
         super().__init__(datapipe, self._wait_replace_future)
         self.prob_name = prob_name
 
+    @nvtx.annotate()
     def _combine_per_layer(self, minibatch):
         subgraph = minibatch._sliced_sampling_graph
 
@@ -331,6 +333,7 @@ class SamplePerLayer(MiniBatchTransformer):
         self.overlap_fetch = overlap_fetch
         self.asynchronous = asynchronous
 
+    @nvtx.annotate()
     def _sample_per_layer(self, minibatch):
         kwargs = {
             key[1:]: getattr(minibatch, key)
@@ -489,6 +492,7 @@ class CompactPerLayer(MiniBatchTransformer):
         else:
             super().__init__(datapipe, self._compact_per_layer)
 
+    @nvtx.annotate()
     def _compact_per_layer(self, minibatch):
         subgraph = minibatch.sampled_subgraphs[0]
         seeds = minibatch._seed_nodes
